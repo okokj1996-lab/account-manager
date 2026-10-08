@@ -6,6 +6,12 @@ import { AccountManager } from "@/components/account-manager"
 import { MemberPicker } from "@/components/member-picker"
 import { Input } from "@/components/ui/input"
 import {
+  DEFAULT_VAULT_GAMES,
+  gamesFromList,
+  shouldApplyGameDirectory,
+  type VaultGame,
+} from "@/lib/games"
+import {
   clearStoredMemberId,
   DEFAULT_MEMBER_NAMES,
   memberNamesFromList,
@@ -30,7 +36,10 @@ export function VaultGate() {
   const [memberReady, setMemberReady] = useState(false)
   const [names, setNames] = useState<MemberNames>(DEFAULT_MEMBER_NAMES)
   const [namesReady, setNamesReady] = useState(false)
+  const [games, setGames] = useState<VaultGame[]>(DEFAULT_VAULT_GAMES)
+  const [gamesReady, setGamesReady] = useState(false)
   const namesUpdatedAtRef = useRef("")
+  const gamesUpdatedAtRef = useRef("")
   const [password, setPassword] = useState("")
   const [error, setError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
@@ -90,8 +99,40 @@ export function VaultGate() {
         if (!cancelled) setNamesReady(true)
       }
     }
+    async function loadGames() {
+      try {
+        const res = await fetch("/api/vault/games")
+        if (!res.ok) return
+        const data = (await res.json()) as { games?: unknown; updatedAt?: unknown }
+        if (cancelled) return
+        const incoming = {
+          games: gamesFromList(data.games),
+          updatedAt: typeof data.updatedAt === "string" ? data.updatedAt : "",
+        }
+        setGames((current) => {
+          if (
+            !shouldApplyGameDirectory(
+              { games: current, updatedAt: gamesUpdatedAtRef.current },
+              incoming
+            )
+          ) {
+            return current
+          }
+          gamesUpdatedAtRef.current = incoming.updatedAt
+          return incoming.games
+        })
+      } catch {
+        // keep the last known games
+      } finally {
+        if (!cancelled) setGamesReady(true)
+      }
+    }
     void load()
-    const id = window.setInterval(() => void load(), 3000)
+    void loadGames()
+    const id = window.setInterval(() => {
+      void load()
+      void loadGames()
+    }, 3000)
     return () => {
       cancelled = true
       window.clearInterval(id)
@@ -101,6 +142,11 @@ export function VaultGate() {
   function applyNames(next: MemberNames, updatedAt: string) {
     namesUpdatedAtRef.current = updatedAt
     setNames(next)
+  }
+
+  function applyGames(next: VaultGame[], updatedAt: string) {
+    gamesUpdatedAtRef.current = updatedAt
+    setGames(next)
   }
 
   async function submit(event: React.FormEvent<HTMLFormElement>) {
@@ -138,12 +184,14 @@ export function VaultGate() {
     }
   }
 
-  if (phase === "open" && memberReady && namesReady && memberId) {
+  if (phase === "open" && memberReady && namesReady && gamesReady && memberId) {
     return (
       <AccountManager
         memberId={memberId}
         names={names}
+        games={games}
         onNamesUpdated={applyNames}
+        onGamesUpdated={applyGames}
         onUnauthorized={() => setPhase("locked")}
         onChangeMember={() => {
           clearStoredMemberId()

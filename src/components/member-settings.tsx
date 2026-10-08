@@ -21,9 +21,13 @@ import {
 export function MemberSettings({
   names,
   onUpdated,
+  triggerClassName,
+  onOpen,
 }: {
   names: MemberNames
   onUpdated: (names: MemberNames, updatedAt: string) => void
+  triggerClassName?: string
+  onOpen?: () => void
 }) {
   const [open, setOpen] = useState(false)
   const [editing, setEditing] = useState<MemberId | null>(null)
@@ -78,9 +82,16 @@ export function MemberSettings({
 
   return (
     <>
-      <Button type="button" variant="outline" onClick={() => setOpen(true)} className="gap-1.5">
+      <button
+        type="button"
+        onClick={() => {
+          onOpen?.()
+          setOpen(true)
+        }}
+        className={triggerClassName}
+      >
         사용자 관리
-      </Button>
+      </button>
       <Dialog
         open={open}
         onOpenChange={(next) => {

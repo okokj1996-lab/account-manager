@@ -5,10 +5,6 @@ import {
   Copy,
   Eye,
   EyeOff,
-  FileDown,
-  FileUp,
-  Lock,
-  Users,
   MoreHorizontal,
   Pencil,
   Plus,
@@ -17,7 +13,8 @@ import {
   Zap,
 } from "lucide-react"
 import { AccountFormDialog } from "@/components/account-form-dialog"
-import { MemberSettings } from "@/components/member-settings"
+import { VaultDashboard } from "@/components/vault-dashboard"
+import { VaultSidebar, type VaultScreen } from "@/components/vault-sidebar"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
@@ -29,7 +26,8 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { Input } from "@/components/ui/input"
 import { Separator } from "@/components/ui/separator"
-import { gameBadge, gameLabel, GAMES } from "@/lib/games"
+import { VaultSelect } from "@/components/ui/vault-select"
+import { gameBadge, gameName, type VaultGame } from "@/lib/games"
 import { isMemberId, memberName, type MemberId, type MemberNames } from "@/lib/members"
 import { isAccountInUse, preserveAccountUsage, sameUsageState } from "@/lib/usage"
 import { mergeRoomEdits, sameAccountList } from "@/lib/storage"
@@ -123,13 +121,17 @@ function UsageLine({
 export function AccountManager({
   memberId,
   names,
+  games,
   onNamesUpdated,
+  onGamesUpdated,
   onUnauthorized,
   onChangeMember,
 }: {
   memberId: MemberId
   names: MemberNames
+  games: VaultGame[]
   onNamesUpdated: (names: MemberNames, updatedAt: string) => void
+  onGamesUpdated: (games: VaultGame[], updatedAt: string) => void
   onUnauthorized: () => void
   onChangeMember: () => void
 }) {
@@ -147,6 +149,14 @@ export function AccountManager({
   const [editing, setEditing] = useState<ZeusAccount | null>(null)
   const [toast, setToast] = useState<string | null>(null)
   const [usagePendingId, setUsagePendingId] = useState<string | null>(null)
+  const [screen, setScreen] = useState<VaultScreen>("accounts")
+  const [menuOpen, setMenuOpen] = useState(false)
+
+  useEffect(() => {
+    if (screen !== "accounts" || gameFilter === "all") return
+    if (games.some((game) => game.id === gameFilter)) return
+    setGameFilter("all")
+  }, [games, gameFilter, screen])
   const [isPending, startTransition] = useTransition()
   const fileInputRef = useRef<HTMLInputElement>(null)
   const skipNextRemoteSave = useRef(false)
@@ -498,7 +508,7 @@ export function AccountManager({
         account.server.toLowerCase().includes(q) ||
         account.notes.toLowerCase().includes(q) ||
         account.game.toLowerCase().includes(q) ||
-        gameLabel(account.game).toLowerCase().includes(q) ||
+        gameName(account.game, games).toLowerCase().includes(q) ||
         gameBadge(account.game).toLowerCase().includes(q)
       )
     })
@@ -510,7 +520,7 @@ export function AccountManager({
       return b.updatedAt.localeCompare(a.updatedAt)
     })
     return list
-  }, [accounts, deferredQuery, gameFilter, statusFilter, sortKey])
+  }, [accounts, deferredQuery, gameFilter, games, statusFilter, sortKey])
 
   const stats = useMemo(() => {
     const total = accounts.length
@@ -606,85 +616,93 @@ export function AccountManager({
     reader.readAsText(file)
   }
 
-  return (
-    <div className="relative mx-auto flex w-full max-w-5xl flex-col gap-6 px-4 py-8 sm:px-6 lg:py-10">
-      <header className="zeus-panel animate-rise overflow-hidden rounded-2xl px-5 py-6 sm:px-8 sm:py-8">
-        <div className="flex flex-col gap-6 xl:flex-row xl:items-start xl:justify-between">
-          <div className="min-w-0 space-y-3">
-            <div className="inline-flex items-center gap-2 text-[var(--zeus-gold)]">
-              <Zap className="size-4 shrink-0 animate-bolt" aria-hidden />
-              <h1 className="font-[family-name:var(--font-display)] text-3xl leading-none tracking-[0.06em] text-[var(--zeus-ivory)] sm:text-4xl">
-                OLYMPUS VAULT
-              </h1>
-            </div>
-            <p className="max-w-md text-sm leading-relaxed text-[var(--zeus-mist)]">
-              게임 계정을 하나의 공용 Vault에서 함께 관리합니다.
-            </p>
-            <div className="inline-flex max-w-full items-center gap-2 rounded-full border border-[rgba(212,162,76,0.35)] bg-primary/10 px-3 py-1.5">
-              <span className="text-[0.65rem] tracking-[0.14em] text-[var(--zeus-gold)]">
-                현재 사용자
-              </span>
-              <span className="truncate text-sm font-medium text-[var(--zeus-ivory)]">
-                {memberName(memberId, names)}
-              </span>
-            </div>
-          </div>
-          <div className="relative z-10 flex flex-col gap-3 sm:flex-row sm:flex-wrap lg:justify-end">
-            <div className="flex min-w-0 flex-col gap-1.5">
-              <p className="text-[0.65rem] tracking-[0.14em] text-[var(--zeus-mist)]">계정 관리</p>
-              <div className="flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  onClick={openCreate}
-                  className="inline-flex h-8 items-center justify-center gap-1.5 rounded-lg bg-primary px-2.5 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/80"
-                >
-                  <Plus className="size-4" />
-                  계정 추가
-                </button>
-                <Button type="button" variant="outline" onClick={exportJson} className="gap-1.5">
-                  <FileDown className="size-4" />
-                  내보내기
-                </Button>
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={() => fileInputRef.current?.click()}
-                  className="gap-1.5"
-                >
-                  <FileUp className="size-4" />
-                  가져오기
-                </Button>
-              </div>
-            </div>
-            <div className="flex min-w-0 flex-col gap-1.5">
-              <p className="text-[0.65rem] tracking-[0.14em] text-[var(--zeus-mist)]">사용자/보안</p>
-              <div className="flex flex-wrap gap-2">
-                <Button type="button" variant="outline" onClick={onChangeMember} className="gap-1.5">
-                  <Users className="size-4" />
-                  사용자 변경
-                </Button>
-                <MemberSettings names={names} onUpdated={onNamesUpdated} />
-                <Button type="button" variant="outline" onClick={() => void lockVault()} className="gap-1.5">
-                  <Lock className="size-4" />
-                  잠금
-                </Button>
-              </div>
-            </div>
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept="application/json,.json"
-              className="hidden"
-              onChange={(e) => {
-                const file = e.target.files?.[0]
-                if (file) importJson(file)
-                e.target.value = ""
-              }}
-            />
-          </div>
-        </div>
+  const listTitle = gameFilter === "all" ? "전체 계정" : gameName(gameFilter, games)
 
-        <div className="mt-6 sm:max-w-md">
+  return (
+    <div className="min-h-svh lg:pl-64">
+      <div className="sticky top-0 z-20 flex items-center justify-between border-b border-white/10 bg-[#07111f]/95 px-4 py-3 lg:hidden">
+        <p className="font-[family-name:var(--font-display)] text-sm tracking-[0.08em] text-[var(--zeus-ivory)]">
+          OLYMPUS VAULT
+        </p>
+        <button
+          type="button"
+          onClick={() => setMenuOpen(true)}
+          className="inline-flex h-8 items-center rounded-lg border border-[rgba(212,162,76,0.35)] px-3 text-sm text-[var(--zeus-ivory)]"
+        >
+          메뉴
+        </button>
+      </div>
+      <VaultSidebar
+        open={menuOpen}
+        screen={screen}
+        gameFilter={gameFilter}
+        currentUserName={memberName(memberId, names)}
+        names={names}
+        games={games}
+        accounts={accounts}
+        onGamesUpdated={onGamesUpdated}
+        onClose={() => setMenuOpen(false)}
+        onDashboard={() => setScreen("dashboard")}
+        onAllAccounts={() => {
+          setScreen("accounts")
+          setGameFilter("all")
+        }}
+        onGame={(gameId) => {
+          setScreen("accounts")
+          setGameFilter(gameId)
+        }}
+        onImport={() => fileInputRef.current?.click()}
+        onExport={exportJson}
+        onChangeMember={onChangeMember}
+        onLock={() => void lockVault()}
+        onNamesUpdated={onNamesUpdated}
+      />
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="application/json,.json"
+        className="hidden"
+        onChange={(e) => {
+          const file = e.target.files?.[0]
+          if (file) importJson(file)
+          e.target.value = ""
+        }}
+      />
+
+      <div className="mx-auto flex w-full max-w-6xl flex-col gap-6 px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
+      {screen === "dashboard" ? (
+        <VaultDashboard
+          accounts={accounts}
+          names={names}
+          games={games}
+          onOpenGame={(gameId) => {
+            setScreen("accounts")
+            setGameFilter(gameId)
+          }}
+          onOpenAccount={(account) => {
+            setScreen("accounts")
+            setGameFilter("all")
+            setStatusFilter("all")
+            setQuery(account.username)
+          }}
+        />
+      ) : (
+      <>
+      <header className="zeus-panel rounded-2xl px-5 py-5 sm:px-6">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <h1 className="font-[family-name:var(--font-display)] text-2xl tracking-wide text-[var(--zeus-ivory)]">
+            {listTitle}
+          </h1>
+          <button
+            type="button"
+            onClick={openCreate}
+            className="inline-flex h-8 items-center justify-center gap-1.5 rounded-lg bg-primary px-2.5 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/80"
+          >
+            <Plus className="size-4" />
+            계정 추가
+          </button>
+        </div>
+        <div className="mt-5 sm:max-w-md">
           <p className="mb-2 text-[0.65rem] tracking-[0.14em] text-[var(--zeus-mist)]">계정 상태</p>
           <div className="grid grid-cols-3 gap-3">
             <Stat label="전체" value={stats.total} />
@@ -694,7 +712,7 @@ export function AccountManager({
         </div>
       </header>
 
-      <section className="zeus-panel animate-rise-delay rounded-2xl p-4 sm:p-5">
+      <section className="zeus-panel rounded-2xl p-4 sm:p-5">
         <div className="flex flex-col gap-3 lg:flex-row lg:items-center">
           <div className="relative flex-1">
             <Search className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
@@ -707,44 +725,37 @@ export function AccountManager({
             />
           </div>
           <div className="flex flex-wrap gap-2">
-            <select
-              aria-label="상태 필터"
+            <VaultSelect
+              ariaLabel="상태 필터"
               value={statusFilter}
-              onChange={(e) => setStatusFilter(e.target.value as StatusFilter)}
-              className="h-8 rounded-lg border border-input bg-transparent px-2.5 text-sm"
-            >
-              <option value="all">전체 상태</option>
-              {(Object.keys(ACCOUNT_STATUS_LABELS) as AccountStatus[]).map(
-                (status) => (
-                  <option key={status} value={status}>
-                    {ACCOUNT_STATUS_LABELS[status]}
-                  </option>
-                )
-              )}
-            </select>
-            <select
-              aria-label="게임 필터"
+              onChange={(next) => setStatusFilter(next as StatusFilter)}
+              options={[
+                { value: "all", label: "전체 상태" },
+                ...(Object.keys(ACCOUNT_STATUS_LABELS) as AccountStatus[]).map((status) => ({
+                  value: status,
+                  label: ACCOUNT_STATUS_LABELS[status],
+                })),
+              ]}
+            />
+            <VaultSelect
+              ariaLabel="게임 필터"
               value={gameFilter}
-              onChange={(e) => setGameFilter(e.target.value)}
-              className="h-8 rounded-lg border border-input bg-transparent px-2.5 text-sm"
-            >
-              <option value="all">모든 게임</option>
-              {GAMES.map((game) => (
-                <option key={game.id} value={game.id}>
-                  {game.label}
-                </option>
-              ))}
-            </select>
-            <select
-              aria-label="정렬"
+              onChange={setGameFilter}
+              options={[
+                { value: "all", label: "모든 게임" },
+                ...games.map((game) => ({ value: game.id, label: game.name })),
+              ]}
+            />
+            <VaultSelect
+              ariaLabel="정렬"
               value={sortKey}
-              onChange={(e) => setSortKey(e.target.value as SortKey)}
-              className="h-8 rounded-lg border border-input bg-transparent px-2.5 text-sm"
-            >
-              <option value="updated">최근 수정</option>
-              <option value="level">레벨 높은순</option>
-              <option value="name">캐릭터명</option>
-            </select>
+              onChange={(next) => setSortKey(next as SortKey)}
+              options={[
+                { value: "updated", label: "최근 수정" },
+                { value: "level", label: "레벨 높은순" },
+                { value: "name", label: "캐릭터명" },
+              ]}
+            />
             {syncing ? (
               <span className="self-center text-xs text-muted-foreground">
                 동기화 중…
@@ -791,7 +802,7 @@ export function AccountManager({
                         variant="outline"
                         className="border-[var(--zeus-gold)]/40 font-mono text-[0.65rem] tracking-wide text-[var(--zeus-gold)]"
                       >
-                        {gameBadge(account.game)}
+                        {gameName(account.game, games)}
                       </Badge>
                       <p className="font-[family-name:var(--font-display)] text-lg tracking-wide text-[var(--zeus-ivory)]">
                         {account.characterName}
@@ -915,11 +926,15 @@ export function AccountManager({
           </ul>
         )}
       </section>
+      </>
+      )}
+      </div>
 
       <AccountFormDialog
         open={dialogOpen}
         onOpenChange={setDialogOpen}
         account={editing}
+        games={games}
         onSave={handleSave}
       />
 

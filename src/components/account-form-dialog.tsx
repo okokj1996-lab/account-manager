@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { Button } from "@/components/ui/button"
 import {
   Dialog,
@@ -13,7 +13,8 @@ import {
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
-import { DEFAULT_GAME_ID, GAMES, gameLabel } from "@/lib/games"
+import { VaultSelect } from "@/components/ui/vault-select"
+import { DEFAULT_GAME_ID, type VaultGame } from "@/lib/games"
 import {
   ACCOUNT_STATUS_LABELS,
   type AccountStatus,
@@ -49,6 +50,7 @@ type AccountFormDialogProps = {
   open: boolean
   onOpenChange: (open: boolean) => void
   account: ZeusAccount | null
+  games: VaultGame[]
   onSave: (account: ZeusAccount) => void
 }
 
@@ -56,16 +58,23 @@ export function AccountFormDialog({
   open,
   onOpenChange,
   account,
+  games,
   onSave,
 }: AccountFormDialogProps) {
   const [form, setForm] = useState<FormState>(emptyForm)
   const [error, setError] = useState("")
+  const gamesRef = useRef(games)
+  gamesRef.current = games
 
   useEffect(() => {
     if (!open) return
+    const list = gamesRef.current
+    const fallback = list.some((game) => game.id === DEFAULT_GAME_ID)
+      ? DEFAULT_GAME_ID
+      : list[0]?.id || DEFAULT_GAME_ID
     if (account) {
       setForm({
-        game: account.game || DEFAULT_GAME_ID,
+        game: account.game || fallback,
         username: account.username,
         password: account.password,
         characterName: account.characterName,
@@ -76,7 +85,7 @@ export function AccountFormDialog({
         lastPlayedAt: account.lastPlayedAt.slice(0, 10),
       })
     } else {
-      setForm(emptyForm)
+      setForm({ ...emptyForm, game: fallback })
     }
     setError("")
   }, [open, account])
@@ -135,21 +144,17 @@ export function AccountFormDialog({
 
           <div className="grid gap-3">
             <Field label="게임" htmlFor="game">
-              <select
+              <VaultSelect
                 id="game"
                 value={form.game}
-                onChange={(e) => update("game", e.target.value)}
-                className="h-8 w-full rounded-lg border border-input bg-transparent px-2.5 text-sm"
-              >
-                {GAMES.map((game) => (
-                  <option key={game.id} value={game.id}>
-                    {game.label}
-                  </option>
-                ))}
-                {GAMES.every((game) => game.id !== form.game) ? (
-                  <option value={form.game}>{gameLabel(form.game)}</option>
-                ) : null}
-              </select>
+                onChange={(next) => update("game", next)}
+                options={[
+                  ...games.map((game) => ({ value: game.id, label: game.name })),
+                  ...(form.game && games.every((game) => game.id !== form.game)
+                    ? [{ value: form.game, label: form.game }]
+                    : []),
+                ]}
+              />
             </Field>
             <Field label="아이디" htmlFor="username">
               <Input
@@ -201,22 +206,17 @@ export function AccountFormDialog({
             </div>
             <div className="grid grid-cols-2 gap-3">
               <Field label="상태" htmlFor="status">
-                <select
+                <VaultSelect
                   id="status"
                   value={form.status}
-                  onChange={(e) =>
-                    update("status", e.target.value as AccountStatus)
-                  }
-                  className="h-8 w-full rounded-lg border border-input bg-transparent px-2.5 text-sm"
-                >
-                  {(Object.keys(ACCOUNT_STATUS_LABELS) as AccountStatus[]).map(
-                    (status) => (
-                      <option key={status} value={status}>
-                        {ACCOUNT_STATUS_LABELS[status]}
-                      </option>
-                    )
+                  onChange={(next) => update("status", next as AccountStatus)}
+                  options={(Object.keys(ACCOUNT_STATUS_LABELS) as AccountStatus[]).map(
+                    (status) => ({
+                      value: status,
+                      label: ACCOUNT_STATUS_LABELS[status],
+                    })
                   )}
-                </select>
+                />
               </Field>
               <Field label="최근 접속" htmlFor="lastPlayedAt">
                 <Input
