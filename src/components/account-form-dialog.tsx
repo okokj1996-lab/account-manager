@@ -16,7 +16,6 @@ import { Textarea } from "@/components/ui/textarea"
 import { DEFAULT_GAME_ID, GAMES, gameLabel } from "@/lib/games"
 import {
   ACCOUNT_STATUS_LABELS,
-  SERVER_OPTIONS,
   type AccountStatus,
   type ZeusAccount,
 } from "@/lib/types"
@@ -39,7 +38,7 @@ const emptyForm: FormState = {
   username: "",
   password: "",
   characterName: "",
-  server: SERVER_OPTIONS[0],
+  server: "",
   level: "1",
   status: "active",
   notes: "",
@@ -181,21 +180,13 @@ export function AccountFormDialog({
             </Field>
             <div className="grid grid-cols-2 gap-3">
               <Field label="서버" htmlFor="server">
-                <select
+                <Input
                   id="server"
                   value={form.server}
                   onChange={(e) => update("server", e.target.value)}
-                  className="h-8 w-full rounded-lg border border-input bg-transparent px-2.5 text-sm"
-                >
-                  {SERVER_OPTIONS.map((server) => (
-                    <option key={server} value={server}>
-                      {server}
-                    </option>
-                  ))}
-                  {!SERVER_OPTIONS.includes(
-                    form.server as (typeof SERVER_OPTIONS)[number]
-                  ) && <option value={form.server}>{form.server}</option>}
-                </select>
+                  placeholder="서버명을 입력하세요"
+                  autoComplete="off"
+                />
               </Field>
               <Field label="레벨" htmlFor="level">
                 <Input

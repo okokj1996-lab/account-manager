@@ -20,8 +20,8 @@ const mono = Geist_Mono({
 })
 
 export const metadata: Metadata = {
-  title: "ZEUS 계정 관리",
-  description: "제우스 게임 계정을 추가·수정·검색·백업하는 로컬 관리 창",
+  title: "OLYMPUS VAULT",
+  description: "게임 계정을 하나의 공용 Vault에서 함께 관리합니다.",
 }
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

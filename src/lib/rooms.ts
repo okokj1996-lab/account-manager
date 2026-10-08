@@ -8,8 +8,15 @@ import {
   isEncryptionKeyConfigured,
   type EncryptedPassword,
 } from "@/lib/password-crypto"
+import type { MemberId } from "@/lib/members"
 import type { ZeusAccount } from "@/lib/types"
+import { decideUsage, preserveUsageList, type UsageAction } from "@/lib/usage"
 import { filterAccounts } from "@/lib/validate"
+import {
+  acquireVaultLock,
+  releaseVaultLock,
+  type VaultLockClient,
+} from "@/lib/vault-lock"
 
 export type RoomData = {
   code: string
@@ -563,9 +570,8 @@ async function migrateVaultRedis(
 ): Promise<void> {
   if (!isEncryptionKeyConfigured()) return
   await enqueueRoomWrite(VAULT_LOCK, async () => {
-    const lockKey = `${VAULT_REDIS_KEY}:lock`
-    const locked = await redis.set(lockKey, "1", { nx: true, ex: 5 })
-    if (locked !== "OK") return
+    const token = await acquireVaultLock(redis as VaultLockClient)
+    if (!token) return
     try {
       const stored = await redis.get<unknown>(VAULT_REDIS_KEY)
       if (!stored || typeof stored !== "object") return
@@ -574,11 +580,7 @@ async function migrateVaultRedis(
       if (!hasPlaintextPassword(stored)) return
       await redis.set(VAULT_REDIS_KEY, sealRawPasswords(stored))
     } finally {
-      try {
-        await redis.del(lockKey)
-      } catch {
-        // The lock expires after 5 seconds if delete fails.
-      }
+      await releaseVaultLock(redis as VaultLockClient, token)
     }
   })
 }
@@ -592,7 +594,7 @@ function vaultFromAccounts(
     code: VAULT_CODE,
     createdAt: existing?.createdAt || now,
     updatedAt: now,
-    accounts: filterAccounts(accounts),
+    accounts: preserveUsageList(filterAccounts(accounts), existing?.accounts ?? []),
   }
 }
 
@@ -636,9 +638,8 @@ async function writeVaultRedis(
   baseUpdatedAt?: string
 ): Promise<RoomWriteResult> {
   return enqueueRoomWrite(VAULT_LOCK, async () => {
-    const lockKey = `${VAULT_REDIS_KEY}:lock`
-    const locked = await redis.set(lockKey, "1", { nx: true, ex: 5 })
-    if (locked !== "OK") {
+    const token = await acquireVaultLock(redis as VaultLockClient)
+    if (!token) {
       const current = await readVaultRedis(redis)
       if (!current) return { ok: false, reason: "missing" }
       return { ok: false, reason: "conflict", room: current.room }
@@ -665,12 +666,79 @@ async function writeVaultRedis(
       await redis.set(VAULT_REDIS_KEY, toStoredRoom(room))
       return { ok: true, room }
     } finally {
+      await releaseVaultLock(redis as VaultLockClient, token)
+    }
+  })
+}
+
+export type UsageWriteResult =
+  | { ok: true; account: ZeusAccount; updatedAt: string }
+  | { ok: false; reason: "missing" }
+  | { ok: false; reason: "in_use"; account: ZeusAccount }
+  | { ok: false; reason: "not_holder"; account: ZeusAccount }
+  | { ok: false; reason: "busy" }
+
+function applyUsageToRoom(
+  room: RoomData,
+  accountId: string,
+  action: UsageAction,
+  memberId: MemberId
+): { result: UsageWriteResult; room?: RoomData } {
+  const current = room.accounts.find((account) => account.id === accountId)
+  if (!current) return { result: { ok: false, reason: "missing" } }
+  const decision = decideUsage(current, action, memberId, new Date().toISOString())
+  if (decision.type === "in_use") {
+    return { result: { ok: false, reason: "in_use", account: current } }
+  }
+  if (decision.type === "not_holder") {
+    return { result: { ok: false, reason: "not_holder", account: current } }
+  }
+  if (!decision.changed) {
+    return { result: { ok: true, account: current, updatedAt: room.updatedAt } }
+  }
+  const next: RoomData = {
+    ...room,
+    updatedAt: new Date().toISOString(),
+    accounts: room.accounts.map((account) =>
+      account.id === accountId ? decision.account : account
+    ),
+  }
+  return {
+    result: { ok: true, account: decision.account, updatedAt: next.updatedAt },
+    room: next,
+  }
+}
+
+export async function updateVaultUsage(
+  accountId: string,
+  action: UsageAction,
+  memberId: MemberId
+): Promise<UsageWriteResult> {
+  const redis = redisFromEnv()
+  if (!redis && isServerlessRuntime()) {
+    throw new Error(
+      "CLOUD_STORE_MISSING: Vercel에서 Upstash Redis(KV)를 연결해야 공유 계정을 쓸 수 있습니다."
+    )
+  }
+  return enqueueRoomWrite(VAULT_LOCK, async () => {
+    if (redis) {
+      const token = await acquireVaultLock(redis as VaultLockClient)
+      if (!token) return { ok: false, reason: "busy" }
       try {
-        await redis.del(lockKey)
-      } catch {
-        // The lock expires after 5 seconds if delete fails.
+        const existing = await readVaultRedis(redis)
+        if (!existing) return { ok: false, reason: "missing" }
+        const applied = applyUsageToRoom(existing.room, accountId, action, memberId)
+        if (applied.room) await redis.set(VAULT_REDIS_KEY, toStoredRoom(applied.room))
+        return applied.result
+      } finally {
+        await releaseVaultLock(redis as VaultLockClient, token)
       }
     }
+    const existing = await readVaultFile()
+    if (!existing) return { ok: false, reason: "missing" }
+    const applied = applyUsageToRoom(existing.room, accountId, action, memberId)
+    if (applied.room) await replaceVaultFile(toStoredRoom(applied.room))
+    return applied.result
   })
 }
 

@@ -1,4 +1,5 @@
 import { STORAGE_KEY, type ZeusAccount } from "@/lib/types"
+import { preserveAccountUsage } from "@/lib/usage"
 import { filterAccounts } from "@/lib/validate"
 
 export const ROOM_STORAGE_KEY = "zeus-game-room-code-v1"
@@ -136,11 +137,11 @@ export function mergeRoomEdits(
     const serverChanged = !sameAccount(before, serverAccount)
 
     if (!localChanged && !serverChanged) {
-      if (localAccount) merged.push(localAccount)
+      if (localAccount) merged.push(preserveAccountUsage(localAccount, serverAccount))
       continue
     }
     if (localChanged && !serverChanged) {
-      if (localAccount) merged.push(localAccount)
+      if (localAccount) merged.push(preserveAccountUsage(localAccount, serverAccount))
       continue
     }
     if (!localChanged && serverChanged) {
@@ -153,14 +154,12 @@ export function mergeRoomEdits(
       continue
     }
     if (!serverAccount) {
-      merged.push(localAccount)
+      merged.push(preserveAccountUsage(localAccount))
       continue
     }
-    merged.push(
-      localAccount.updatedAt >= serverAccount.updatedAt
-        ? localAccount
-        : serverAccount
-    )
+    const winner =
+      localAccount.updatedAt >= serverAccount.updatedAt ? localAccount : serverAccount
+    merged.push(preserveAccountUsage(winner, serverAccount))
   }
 
   return merged
