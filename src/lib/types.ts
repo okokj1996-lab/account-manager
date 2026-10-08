@@ -2,6 +2,7 @@ export type AccountStatus = "active" | "resting" | "banned" | "shared"
 
 export interface ZeusAccount {
   id: string
+  game: string
   username: string
   password: string
   characterName: string

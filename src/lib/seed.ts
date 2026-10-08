@@ -3,6 +3,7 @@ import type { ZeusAccount } from "@/lib/types"
 export const SEED_ACCOUNTS: ZeusAccount[] = [
   {
     id: "seed-1",
+    game: "ZEUS",
     username: "zeus_main",
     password: "Thunder!2026",
     characterName: "제우스",
@@ -16,6 +17,7 @@ export const SEED_ACCOUNTS: ZeusAccount[] = [
   },
   {
     id: "seed-2",
+    game: "ZEUS",
     username: "athena_alt",
     password: "OwlShield88",
     characterName: "아테나",
@@ -29,6 +31,7 @@ export const SEED_ACCOUNTS: ZeusAccount[] = [
   },
   {
     id: "seed-3",
+    game: "ZEUS",
     username: "hermes_trade",
     password: "WingedBoot#1",
     characterName: "헤르메스",

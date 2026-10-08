@@ -40,6 +40,10 @@ export function createId(): string {
   return `acc-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
 }
 
+function accountMatchKey(account: ZeusAccount): string {
+  return `${account.game}\n${account.username.toLowerCase()}`
+}
+
 /** Merge personal accounts into a room list without dropping either side. */
 export function mergeAccounts(
   personal: ZeusAccount[],
@@ -50,17 +54,17 @@ export function mergeAccounts(
 
   for (const account of room) {
     byId.set(account.id, account)
-    byUsername.set(account.username.toLowerCase(), account.id)
+    byUsername.set(accountMatchKey(account), account.id)
   }
 
   for (const account of personal) {
     const existingId = byId.has(account.id)
       ? account.id
-      : byUsername.get(account.username.toLowerCase())
+      : byUsername.get(accountMatchKey(account))
 
     if (!existingId) {
       byId.set(account.id, account)
-      byUsername.set(account.username.toLowerCase(), account.id)
+      byUsername.set(accountMatchKey(account), account.id)
       continue
     }
 
@@ -69,9 +73,95 @@ export function mergeAccounts(
     if (account.updatedAt >= existing.updatedAt) {
       if (existingId !== account.id) byId.delete(existingId)
       byId.set(account.id, account)
-      byUsername.set(account.username.toLowerCase(), account.id)
+      byUsername.set(accountMatchKey(account), account.id)
     }
   }
 
   return Array.from(byId.values())
+}
+
+function sameAccount(a?: ZeusAccount, b?: ZeusAccount): boolean {
+  if (!a && !b) return true
+  if (!a || !b) return false
+  return (
+    a.id === b.id &&
+    a.game === b.game &&
+    a.username === b.username &&
+    a.password === b.password &&
+    a.characterName === b.characterName &&
+    a.server === b.server &&
+    a.level === b.level &&
+    a.status === b.status &&
+    a.notes === b.notes &&
+    a.lastPlayedAt === b.lastPlayedAt &&
+    a.createdAt === b.createdAt &&
+    a.updatedAt === b.updatedAt
+  )
+}
+
+export function sameAccountList(
+  left: ZeusAccount[],
+  right: ZeusAccount[]
+): boolean {
+  if (left.length !== right.length) return false
+  const byId = new Map(right.map((account) => [account.id, account]))
+  return left.every((account) => sameAccount(account, byId.get(account.id)))
+}
+
+/**
+ * Combine two edits of the same room.
+ * baseline is the server list both edits started from.
+ * A delete stays deleted unless the other side changed that same account.
+ */
+export function mergeRoomEdits(
+  baseline: ZeusAccount[],
+  local: ZeusAccount[],
+  server: ZeusAccount[]
+): ZeusAccount[] {
+  const base = new Map(baseline.map((account) => [account.id, account]))
+  const mine = new Map(local.map((account) => [account.id, account]))
+  const theirs = new Map(server.map((account) => [account.id, account]))
+  const ids = new Set<string>([
+    ...base.keys(),
+    ...mine.keys(),
+    ...theirs.keys(),
+  ])
+  const merged: ZeusAccount[] = []
+
+  for (const id of ids) {
+    const before = base.get(id)
+    const localAccount = mine.get(id)
+    const serverAccount = theirs.get(id)
+    const localChanged = !sameAccount(before, localAccount)
+    const serverChanged = !sameAccount(before, serverAccount)
+
+    if (!localChanged && !serverChanged) {
+      if (localAccount) merged.push(localAccount)
+      continue
+    }
+    if (localChanged && !serverChanged) {
+      if (localAccount) merged.push(localAccount)
+      continue
+    }
+    if (!localChanged && serverChanged) {
+      if (serverAccount) merged.push(serverAccount)
+      continue
+    }
+    if (!localAccount && !serverAccount) continue
+    if (!localAccount) {
+      if (serverAccount) merged.push(serverAccount)
+      continue
+    }
+    if (!serverAccount) {
+      merged.push(localAccount)
+      continue
+    }
+    merged.push(
+      localAccount.updatedAt >= serverAccount.updatedAt
+        ? localAccount
+        : serverAccount
+    )
+  }
+
+  return merged
 }

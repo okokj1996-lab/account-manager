@@ -1,6 +1,13 @@
 import { promises as fs } from "fs"
 import path from "path"
 import { Redis } from "@upstash/redis"
+import {
+  decryptPassword,
+  encryptPassword,
+  isEncryptedPassword,
+  isEncryptionKeyConfigured,
+  type EncryptedPassword,
+} from "@/lib/password-crypto"
 import type { ZeusAccount } from "@/lib/types"
 import { filterAccounts } from "@/lib/validate"
 
@@ -11,8 +18,44 @@ export type RoomData = {
   accounts: ZeusAccount[]
 }
 
+type StoredAccount = Omit<ZeusAccount, "password"> & {
+  password: EncryptedPassword | string
+}
+
+type StoredRoom = {
+  code: string
+  createdAt: string
+  updatedAt: string
+  accounts: StoredAccount[]
+}
+
+type ParsedRoom = {
+  room: RoomData
+  needsMigration: boolean
+}
+
 const DATA_DIR = path.join(process.cwd(), ".data", "rooms")
 const ROOM_PREFIX = "zeus:room:"
+
+export type RoomWriteResult =
+  | { ok: true; room: RoomData }
+  | { ok: false; reason: "missing" }
+  | { ok: false; reason: "conflict"; room: RoomData }
+
+const roomWriteTails = new Map<string, Promise<void>>()
+
+function enqueueRoomWrite<T>(code: string, task: () => Promise<T>): Promise<T> {
+  const previous = roomWriteTails.get(code) ?? Promise.resolve()
+  const run = previous.then(task, task)
+  roomWriteTails.set(
+    code,
+    run.then(
+      () => undefined,
+      () => undefined
+    )
+  )
+  return run
+}
 
 function roomPath(code: string): string {
   return path.join(DATA_DIR, `${code}.json`)
@@ -54,137 +97,388 @@ async function ensureDataDir(): Promise<void> {
   await fs.mkdir(DATA_DIR, { recursive: true })
 }
 
-function parseRoom(value: unknown, code: string): RoomData | null {
+function hasPlaintextPassword(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false
+  const accounts = (value as { accounts?: unknown }).accounts
+  if (!Array.isArray(accounts)) return false
+  return accounts.some(
+    (item) =>
+      Boolean(item) &&
+      typeof item === "object" &&
+      typeof (item as { password?: unknown }).password === "string"
+  )
+}
+
+function openStoredAccounts(value: unknown): {
+  accounts: unknown
+  needsMigration: boolean
+} {
+  if (!Array.isArray(value)) return { accounts: value, needsMigration: false }
+  let needsMigration = false
+  const accounts = value.map((item) => {
+    if (!item || typeof item !== "object") return item
+    const row = item as Record<string, unknown>
+    const password = row.password
+    if (typeof password === "string") {
+      needsMigration = true
+      return item
+    }
+    if (isEncryptedPassword(password)) {
+      return { ...row, password: decryptPassword(password) }
+    }
+    if (password !== undefined) throw new Error("ENCRYPTION_DECRYPT_FAILED")
+    return item
+  })
+  return { accounts, needsMigration }
+}
+
+function parseRoom(value: unknown, code: string): ParsedRoom | null {
   if (!value || typeof value !== "object") return null
-  const parsed = value as RoomData
+  const parsed = value as {
+    code?: unknown
+    createdAt?: unknown
+    updatedAt?: unknown
+    accounts?: unknown
+  }
   if (parsed.code !== code) return null
+  const opened = openStoredAccounts(parsed.accounts)
   return {
-    code,
-    createdAt: String(parsed.createdAt ?? ""),
-    updatedAt: String(parsed.updatedAt ?? ""),
-    accounts: filterAccounts(parsed.accounts),
+    needsMigration: opened.needsMigration,
+    room: {
+      code,
+      createdAt: String(parsed.createdAt ?? ""),
+      updatedAt: String(parsed.updatedAt ?? ""),
+      accounts: filterAccounts(opened.accounts),
+    },
   }
 }
 
-async function createRoomFile(accounts: ZeusAccount[]): Promise<RoomData> {
-  await ensureDataDir()
-  let code = createRoomCode()
-  for (let i = 0; i < 5; i += 1) {
-    try {
-      await fs.access(roomPath(code))
-      code = createRoomCode()
-    } catch {
-      break
-    }
+function toStoredRoom(room: RoomData): StoredRoom {
+  return {
+    code: room.code,
+    createdAt: room.createdAt,
+    updatedAt: room.updatedAt,
+    accounts: room.accounts.map((account) => ({
+      ...account,
+      password: encryptPassword(account.password),
+    })),
   }
+}
+
+function sealRawPasswords(value: unknown): StoredRoom {
+  if (!value || typeof value !== "object") {
+    throw new Error("ENCRYPTION_FAILED")
+  }
+  const room = value as StoredRoom
+  if (!Array.isArray(room.accounts)) throw new Error("ENCRYPTION_FAILED")
+  return {
+    ...room,
+    accounts: room.accounts.map((account) => {
+      if (!account || typeof account !== "object") return account
+      if (typeof account.password !== "string") return account
+      return {
+        ...account,
+        password: encryptPassword(account.password),
+      }
+    }),
+  }
+}
+
+function buildRoom(code: string, accounts: ZeusAccount[]): RoomData {
   const now = new Date().toISOString()
-  const room: RoomData = {
+  return {
     code,
     createdAt: now,
     updatedAt: now,
     accounts: filterAccounts(accounts),
   }
-  await fs.writeFile(roomPath(code), JSON.stringify(room, null, 2), "utf8")
-  return room
 }
 
-async function readRoomFile(code: string): Promise<RoomData | null> {
+async function writeNewRoomFile(room: StoredRoom): Promise<boolean> {
   try {
-    const raw = await fs.readFile(roomPath(code), "utf8")
-    return parseRoom(JSON.parse(raw) as unknown, code)
-  } catch {
-    return null
+    await fs.writeFile(roomPath(room.code), JSON.stringify(room, null, 2), {
+      encoding: "utf8",
+      flag: "wx",
+    })
+    return true
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") return false
+    throw error
   }
+}
+
+async function replaceRoomFile(room: StoredRoom): Promise<void> {
+  await ensureDataDir()
+  const target = roomPath(room.code)
+  const temp = path.join(DATA_DIR, `.${room.code}.${process.pid}.tmp`)
+  const backup = path.join(DATA_DIR, `.${room.code}.${process.pid}.bak`)
+  await fs.writeFile(temp, JSON.stringify(room, null, 2), "utf8")
+  let movedAside = false
+  try {
+    await fs.rename(target, backup)
+    movedAside = true
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+  }
+  try {
+    await fs.rename(temp, target)
+  } catch (error) {
+    if (movedAside) {
+      await fs.rename(backup, target).catch(() => undefined)
+    }
+    throw error
+  }
+  if (movedAside) {
+    await fs.rm(backup, { force: true }).catch(() => undefined)
+  }
+}
+
+async function createRoomFile(
+  accounts: ZeusAccount[],
+  preferredCode: string | null
+): Promise<RoomData> {
+  await ensureDataDir()
+  const plainAccounts = filterAccounts(accounts)
+  const sealedAccounts = plainAccounts.map((account) => ({
+    ...account,
+    password: encryptPassword(account.password),
+  }))
+
+  if (preferredCode) {
+    const room = buildRoom(preferredCode, plainAccounts)
+    const stored: StoredRoom = { ...room, accounts: sealedAccounts }
+    if (!(await writeNewRoomFile(stored))) {
+      throw new Error("ROOM_CODE_TAKEN")
+    }
+    return room
+  }
+
+  for (let i = 0; i < 8; i += 1) {
+    const room = buildRoom(createRoomCode(), plainAccounts)
+    const stored: StoredRoom = { ...room, accounts: sealedAccounts }
+    if (await writeNewRoomFile(stored)) return room
+  }
+  throw new Error("ROOM_CREATE_FAILED")
+}
+
+async function readRoomFile(code: string): Promise<ParsedRoom | null> {
+  let raw: string
+  try {
+    raw = await fs.readFile(roomPath(code), "utf8")
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null
+    throw error
+  }
+  return parseRoom(JSON.parse(raw) as unknown, code)
 }
 
 async function writeRoomFile(
   code: string,
-  accounts: ZeusAccount[]
-): Promise<RoomData | null> {
-  const existing = await readRoomFile(code)
-  if (!existing) return null
-  const room: RoomData = {
-    ...existing,
-    updatedAt: new Date().toISOString(),
-    accounts: filterAccounts(accounts),
-  }
-  await fs.writeFile(roomPath(room.code), JSON.stringify(room, null, 2), "utf8")
-  return room
+  accounts: ZeusAccount[],
+  baseUpdatedAt?: string
+): Promise<RoomWriteResult> {
+  return enqueueRoomWrite(code, async () => {
+    const existing = await readRoomFile(code)
+    if (!existing) return { ok: false, reason: "missing" }
+    if (baseUpdatedAt && existing.room.updatedAt !== baseUpdatedAt) {
+      return { ok: false, reason: "conflict", room: existing.room }
+    }
+    const room: RoomData = {
+      ...existing.room,
+      updatedAt: new Date().toISOString(),
+      accounts: filterAccounts(accounts),
+    }
+    await replaceRoomFile(toStoredRoom(room))
+    return { ok: true, room }
+  })
+}
+
+async function migratePlaintextFile(
+  code: string,
+  seenUpdatedAt: string
+): Promise<void> {
+  if (!isEncryptionKeyConfigured()) return
+  await enqueueRoomWrite(code, async () => {
+    let raw: string
+    try {
+      raw = await fs.readFile(roomPath(code), "utf8")
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return
+      throw error
+    }
+    const stored = JSON.parse(raw) as { code?: unknown; updatedAt?: unknown }
+    if (stored.code !== code || stored.updatedAt !== seenUpdatedAt) return
+    if (!hasPlaintextPassword(stored)) return
+    await replaceRoomFile(sealRawPasswords(stored))
+  })
+}
+
+async function writeNewRoomRedis(
+  redis: Redis,
+  room: StoredRoom
+): Promise<boolean> {
+  const saved = await redis.set(`${ROOM_PREFIX}${room.code}`, room, {
+    nx: true,
+  })
+  return saved === "OK"
 }
 
 async function createRoomRedis(
   redis: Redis,
-  accounts: ZeusAccount[]
+  accounts: ZeusAccount[],
+  preferredCode: string | null
 ): Promise<RoomData> {
-  let code = createRoomCode()
+  const plainAccounts = filterAccounts(accounts)
+  const sealedAccounts = plainAccounts.map((account) => ({
+    ...account,
+    password: encryptPassword(account.password),
+  }))
+
+  if (preferredCode) {
+    const room = buildRoom(preferredCode, plainAccounts)
+    const stored: StoredRoom = { ...room, accounts: sealedAccounts }
+    if (!(await writeNewRoomRedis(redis, stored))) {
+      throw new Error("ROOM_CODE_TAKEN")
+    }
+    return room
+  }
+
   for (let i = 0; i < 8; i += 1) {
-    const exists = await redis.exists(`${ROOM_PREFIX}${code}`)
-    if (!exists) break
-    code = createRoomCode()
+    const room = buildRoom(createRoomCode(), plainAccounts)
+    const stored: StoredRoom = { ...room, accounts: sealedAccounts }
+    if (await writeNewRoomRedis(redis, stored)) return room
   }
-  const now = new Date().toISOString()
-  const room: RoomData = {
-    code,
-    createdAt: now,
-    updatedAt: now,
-    accounts: filterAccounts(accounts),
-  }
-  await redis.set(`${ROOM_PREFIX}${code}`, room)
-  return room
+  throw new Error("ROOM_CREATE_FAILED")
 }
 
 async function readRoomRedis(
   redis: Redis,
   code: string
-): Promise<RoomData | null> {
-  const value = await redis.get<RoomData>(`${ROOM_PREFIX}${code}`)
+): Promise<ParsedRoom | null> {
+  const value = await redis.get<unknown>(`${ROOM_PREFIX}${code}`)
+  if (value == null) return null
   return parseRoom(value, code)
+}
+
+async function migratePlaintextRedis(
+  redis: Redis,
+  code: string,
+  seenUpdatedAt: string
+): Promise<void> {
+  if (!isEncryptionKeyConfigured()) return
+  await enqueueRoomWrite(code, async () => {
+    const key = `${ROOM_PREFIX}${code}`
+    const lockKey = `${key}:lock`
+    const locked = await redis.set(lockKey, "1", { nx: true, ex: 5 })
+    if (locked !== "OK") return
+    try {
+      const stored = await redis.get<unknown>(key)
+      if (!stored || typeof stored !== "object") return
+      const record = stored as { code?: unknown; updatedAt?: unknown }
+      if (record.code !== code || record.updatedAt !== seenUpdatedAt) return
+      if (!hasPlaintextPassword(stored)) return
+      await redis.set(key, sealRawPasswords(stored))
+    } finally {
+      try {
+        await redis.del(lockKey)
+      } catch {
+        // The lock expires after 5 seconds if delete fails.
+      }
+    }
+  })
 }
 
 async function writeRoomRedis(
   redis: Redis,
   code: string,
-  accounts: ZeusAccount[]
-): Promise<RoomData | null> {
-  const existing = await readRoomRedis(redis, code)
-  if (!existing) return null
-  const room: RoomData = {
-    ...existing,
-    updatedAt: new Date().toISOString(),
-    accounts: filterAccounts(accounts),
-  }
-  await redis.set(`${ROOM_PREFIX}${code}`, room)
-  return room
+  accounts: ZeusAccount[],
+  baseUpdatedAt?: string
+): Promise<RoomWriteResult> {
+  return enqueueRoomWrite(code, async () => {
+    const key = `${ROOM_PREFIX}${code}`
+    const lockKey = `${key}:lock`
+    const locked = await redis.set(lockKey, "1", { nx: true, ex: 5 })
+    if (locked !== "OK") {
+      const current = await readRoomRedis(redis, code)
+      if (!current) return { ok: false, reason: "missing" }
+      return { ok: false, reason: "conflict", room: current.room }
+    }
+    try {
+      const existing = await readRoomRedis(redis, code)
+      if (!existing) return { ok: false, reason: "missing" }
+      if (baseUpdatedAt && existing.room.updatedAt !== baseUpdatedAt) {
+        return { ok: false, reason: "conflict", room: existing.room }
+      }
+      const room: RoomData = {
+        ...existing.room,
+        updatedAt: new Date().toISOString(),
+        accounts: filterAccounts(accounts),
+      }
+      await redis.set(key, toStoredRoom(room))
+      return { ok: true, room }
+    } finally {
+      try {
+        await redis.del(lockKey)
+      } catch {
+        // The lock expires after 5 seconds if delete fails.
+      }
+    }
+  })
 }
 
-export async function createRoom(accounts: ZeusAccount[]): Promise<RoomData> {
+export async function createRoom(
+  accounts: ZeusAccount[],
+  preferredCode?: string
+): Promise<RoomData> {
+  let code: string | null = null
+  if (preferredCode !== undefined && preferredCode.trim() !== "") {
+    code = normalizeRoomCode(preferredCode)
+    if (!code) throw new Error("INVALID_ROOM_CODE")
+  }
+
   const redis = redisFromEnv()
-  if (redis) return createRoomRedis(redis, accounts)
+  if (redis) return createRoomRedis(redis, accounts, code)
   if (isServerlessRuntime()) {
     throw new Error(
       "CLOUD_STORE_MISSING: Vercel에서 Upstash Redis(KV)를 연결해야 공유 방을 쓸 수 있습니다."
     )
   }
-  return createRoomFile(accounts)
+  return createRoomFile(accounts, code)
 }
 
 export async function readRoom(code: string): Promise<RoomData | null> {
   const normalized = normalizeRoomCode(code)
   if (!normalized) return null
   const redis = redisFromEnv()
-  if (redis) return readRoomRedis(redis, normalized)
-  if (isServerlessRuntime()) return null
-  return readRoomFile(normalized)
+  const parsed = redis
+    ? await readRoomRedis(redis, normalized)
+    : isServerlessRuntime()
+      ? null
+      : await readRoomFile(normalized)
+  if (!parsed) return null
+  if (parsed.needsMigration && isEncryptionKeyConfigured()) {
+    try {
+      if (redis) await migratePlaintextRedis(redis, normalized, parsed.room.updatedAt)
+      else await migratePlaintextFile(normalized, parsed.room.updatedAt)
+    } catch (error) {
+      console.error(
+        "[rooms] password migration skipped",
+        error instanceof Error ? error.message : "unknown"
+      )
+    }
+  }
+  return parsed.room
 }
 
 export async function writeRoom(
   code: string,
-  accounts: ZeusAccount[]
-): Promise<RoomData | null> {
+  accounts: ZeusAccount[],
+  baseUpdatedAt?: string
+): Promise<RoomWriteResult> {
   const normalized = normalizeRoomCode(code)
-  if (!normalized) return null
+  if (!normalized) return { ok: false, reason: "missing" }
   const redis = redisFromEnv()
-  if (redis) return writeRoomRedis(redis, normalized, accounts)
-  if (isServerlessRuntime()) return null
-  return writeRoomFile(normalized, accounts)
+  if (redis) return writeRoomRedis(redis, normalized, accounts, baseUpdatedAt)
+  if (isServerlessRuntime()) return { ok: false, reason: "missing" }
+  return writeRoomFile(normalized, accounts, baseUpdatedAt)
 }

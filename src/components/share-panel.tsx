@@ -10,7 +10,7 @@ type SharePanelProps = {
   roomCode: string | null
   syncing: boolean
   accounts: ZeusAccount[]
-  onJoined: (code: string, accounts: ZeusAccount[]) => void
+  onJoined: (code: string, accounts: ZeusAccount[], updatedAt: string) => void
   onLeft: () => void
   onToast: (message: string) => void
 }
@@ -54,23 +54,33 @@ export function SharePanel({
   }, [])
 
   async function createRoom() {
+    const typed = joinCode.trim().toUpperCase().replace(/[^A-Z0-9]/g, "")
+    if (joinCode.trim() && (typed.length < 4 || typed.length > 12)) {
+      onToast("방 코드는 영문과 숫자 4~12자리로 입력하세요.")
+      return
+    }
     setBusy(true)
     try {
       const res = await fetch("/api/rooms", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ accounts }),
+        body: JSON.stringify({
+          accounts,
+          ...(typed ? { code: typed } : {}),
+        }),
       })
       const data = (await res.json()) as {
         code?: string
         accounts?: ZeusAccount[]
+        updatedAt?: string
         error?: string
       }
-      if (!res.ok || !data.code || !data.accounts) {
+      if (!res.ok || !data.code || !data.accounts || !data.updatedAt) {
         onToast(data.error || "공유 방을 만들지 못했습니다.")
         return
       }
-      onJoined(data.code, data.accounts)
+      onJoined(data.code, data.accounts, data.updatedAt)
+      setJoinCode("")
       const url = `${window.location.origin}/?room=${data.code}`
       try {
         await navigator.clipboard.writeText(url)
@@ -94,16 +104,24 @@ export function SharePanel({
     setBusy(true)
     try {
       const res = await fetch(`/api/rooms/${encodeURIComponent(code)}`)
-      if (res.status === 404) {
-        onToast("방을 찾을 수 없습니다.")
+      if (!res.ok) {
+        let message =
+          res.status === 404 ? "방을 찾을 수 없습니다." : "방 참가에 실패했습니다."
+        try {
+          const data = (await res.json()) as { error?: unknown }
+          if (typeof data.error === "string") message = data.error
+        } catch {
+          // ignore a non-JSON error body
+        }
+        onToast(message)
         return
       }
-      if (!res.ok) throw new Error("join failed")
       const room = (await res.json()) as {
         code: string
+        updatedAt: string
         accounts: ZeusAccount[]
       }
-      onJoined(room.code, room.accounts)
+      onJoined(room.code, room.accounts, room.updatedAt)
       onToast(`${room.code} 방에 참가했습니다.`)
       setJoinCode("")
     } catch {
@@ -138,8 +156,8 @@ export function SharePanel({
             친구와 공유
           </div>
           <p className="max-w-xl text-sm text-muted-foreground">
-            같은 방 코드를 쓰면 계정 목록을 함께 보고 수정할 수 있습니다. 같은
-            앱 주소에 접속한 친구에게 초대 링크를 보내세요.
+            개인 계정은 이 브라우저에 남고, 공유 계정은 같은 방 코드의 서버
+            목록입니다. 마지막 방 코드만 기억해서 다음에 다시 들어갑니다.
           </p>
         </div>
         {roomCode ? (
@@ -188,23 +206,29 @@ export function SharePanel({
           </div>
         ) : (
           <div className="flex flex-wrap items-center gap-2">
+            <Input
+              value={joinCode}
+              onChange={(e) => setJoinCode(e.target.value.toUpperCase())}
+              placeholder="예: 1996S"
+              className="w-36 font-mono tracking-wider"
+              aria-label="만들거나 참가할 방 코드"
+              maxLength={12}
+              onKeyDown={(e) => {
+                if (e.key !== "Enter" || busy) return
+                e.preventDefault()
+                void createRoom()
+              }}
+            />
             <Button
               type="button"
               onClick={createRoom}
               disabled={busy}
               className="gap-1.5"
+              title="입력한 코드로 방을 만듭니다. 비우면 자동으로 만듭니다."
             >
               <Users className="size-4" />
               공유 방 만들기
             </Button>
-            <Input
-              value={joinCode}
-              onChange={(e) => setJoinCode(e.target.value.toUpperCase())}
-              placeholder="방 코드"
-              className="w-28 font-mono tracking-wider"
-              aria-label="방 코드"
-              maxLength={12}
-            />
             <Button
               type="button"
               variant="outline"

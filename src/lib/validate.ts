@@ -1,3 +1,4 @@
+import { normalizeGame } from "@/lib/games"
 import type { ZeusAccount } from "@/lib/types"
 
 export function isAccount(value: unknown): value is ZeusAccount {
@@ -18,7 +19,15 @@ export function isAccount(value: unknown): value is ZeusAccount {
   )
 }
 
+/** Keep every existing field. Missing or blank game becomes ZEUS. */
+export function withGame(account: ZeusAccount): ZeusAccount {
+  return {
+    ...account,
+    game: normalizeGame(account.game),
+  }
+}
+
 export function filterAccounts(value: unknown): ZeusAccount[] {
   if (!Array.isArray(value)) return []
-  return value.filter(isAccount)
+  return value.filter(isAccount).map(withGame)
 }

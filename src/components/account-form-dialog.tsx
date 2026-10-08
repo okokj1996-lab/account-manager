@@ -13,6 +13,7 @@ import {
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
+import { DEFAULT_GAME_ID, GAMES, gameLabel } from "@/lib/games"
 import {
   ACCOUNT_STATUS_LABELS,
   SERVER_OPTIONS,
@@ -22,6 +23,7 @@ import {
 import { createId } from "@/lib/storage"
 
 type FormState = {
+  game: string
   username: string
   password: string
   characterName: string
@@ -33,6 +35,7 @@ type FormState = {
 }
 
 const emptyForm: FormState = {
+  game: DEFAULT_GAME_ID,
   username: "",
   password: "",
   characterName: "",
@@ -63,6 +66,7 @@ export function AccountFormDialog({
     if (!open) return
     if (account) {
       setForm({
+        game: account.game || DEFAULT_GAME_ID,
         username: account.username,
         password: account.password,
         characterName: account.characterName,
@@ -101,6 +105,7 @@ export function AccountFormDialog({
     const now = new Date().toISOString()
     onSave({
       id: account?.id ?? createId(),
+      game: form.game || DEFAULT_GAME_ID,
       username,
       password,
       characterName,
@@ -124,12 +129,29 @@ export function AccountFormDialog({
               {account ? "계정 수정" : "계정 추가"}
             </DialogTitle>
             <DialogDescription>
-              제우스 게임 계정 정보를 입력하세요. 데이터는 이 브라우저에만
+              게임과 계정 정보를 입력하세요. 데이터는 이 브라우저에만
               저장됩니다.
             </DialogDescription>
           </DialogHeader>
 
           <div className="grid gap-3">
+            <Field label="게임" htmlFor="game">
+              <select
+                id="game"
+                value={form.game}
+                onChange={(e) => update("game", e.target.value)}
+                className="h-8 w-full rounded-lg border border-input bg-transparent px-2.5 text-sm"
+              >
+                {GAMES.map((game) => (
+                  <option key={game.id} value={game.id}>
+                    {game.label}
+                  </option>
+                ))}
+                {GAMES.every((game) => game.id !== form.game) ? (
+                  <option value={form.game}>{gameLabel(form.game)}</option>
+                ) : null}
+              </select>
+            </Field>
             <Field label="아이디" htmlFor="username">
               <Input
                 id="username"

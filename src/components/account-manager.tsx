@@ -27,11 +27,13 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { Input } from "@/components/ui/input"
 import { Separator } from "@/components/ui/separator"
+import { gameBadge, gameLabel, GAMES } from "@/lib/games"
 import { SEED_ACCOUNTS } from "@/lib/seed"
 import {
   loadAccounts,
   loadRoomCode,
-  mergeAccounts,
+  mergeRoomEdits,
+  sameAccountList,
   saveAccounts,
   saveRoomCode,
 } from "@/lib/storage"
@@ -63,6 +65,7 @@ export function AccountManager() {
   const [query, setQuery] = useState("")
   const [deferredQuery, setDeferredQuery] = useState("")
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all")
+  const [gameFilter, setGameFilter] = useState("all")
   const [sortKey, setSortKey] = useState<SortKey>("updated")
   const [revealedIds, setRevealedIds] = useState<Set<string>>(new Set())
   const [dialogOpen, setDialogOpen] = useState(false)
@@ -72,7 +75,15 @@ export function AccountManager() {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const skipNextRemoteSave = useRef(false)
   const roomUpdatedAt = useRef<string | null>(null)
+  const roomBaselineRef = useRef<ZeusAccount[]>([])
+  const roomDirtyRef = useRef(false)
+  const saveGenRef = useRef(0)
+  const accountsRef = useRef(accounts)
+  const roomCodeRef = useRef(roomCode)
   const personalBackupRef = useRef<ZeusAccount[] | null>(null)
+  const roomErrorRef = useRef<string | null>(null)
+  accountsRef.current = accounts
+  roomCodeRef.current = roomCode
 
   useEffect(() => {
     async function boot() {
@@ -95,22 +106,30 @@ export function AccountManager() {
               updatedAt: string
               accounts: ZeusAccount[]
             }
-            const personal = stored.length > 0 ? stored : []
-            personalBackupRef.current = personal
-            const merged = mergeAccounts(personal, room.accounts)
-            const broughtPersonal = merged.length > room.accounts.length
-            skipNextRemoteSave.current = !broughtPersonal
-            roomUpdatedAt.current = broughtPersonal
-              ? null
-              : room.updatedAt
-            setAccounts(merged)
+            personalBackupRef.current = stored
+            skipNextRemoteSave.current = true
+            roomDirtyRef.current = false
+            roomUpdatedAt.current = room.updatedAt
+            roomBaselineRef.current = room.accounts
+            setAccounts(room.accounts)
             setRoomCode(room.code)
             saveRoomCode(room.code)
             if (fromUrl) {
               window.history.replaceState({}, "", `/?room=${room.code}`)
             }
-          } else if (saved && !fromUrl) {
-            saveRoomCode(null)
+          } else {
+            let message = ""
+            try {
+              const data = (await res.json()) as { error?: unknown }
+              if (typeof data.error === "string") message = data.error
+            } catch {
+              // ignore a non-JSON error body
+            }
+            if (res.status === 404 && saved && !fromUrl) {
+              saveRoomCode(null)
+            } else if (message) {
+              showToast(message)
+            }
           }
         } catch {
           // keep local accounts if room is unreachable
@@ -131,47 +150,131 @@ export function AccountManager() {
     if (!ready || !roomCode) return
     if (skipNextRemoteSave.current) {
       skipNextRemoteSave.current = false
+      roomDirtyRef.current = false
       return
     }
-    const id = window.setTimeout(async () => {
+
+    const gen = saveGenRef.current + 1
+    saveGenRef.current = gen
+    const code = roomCode
+    const snapshot = accounts
+    const baseUpdatedAt = roomUpdatedAt.current
+    roomDirtyRef.current = true
+
+    async function push(bodyAccounts: ZeusAccount[], base: string | null, attempt: number) {
+      if (saveGenRef.current !== gen || roomCodeRef.current !== code) return
       setSyncing(true)
       try {
-        const res = await fetch(`/api/rooms/${encodeURIComponent(roomCode)}`, {
+        const res = await fetch(`/api/rooms/${encodeURIComponent(code)}`, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ accounts }),
+          body: JSON.stringify({
+            accounts: bodyAccounts,
+            baseUpdatedAt: base,
+          }),
         })
-        if (res.ok) {
-          const room = (await res.json()) as { updatedAt: string }
-          roomUpdatedAt.current = room.updatedAt
+        if (saveGenRef.current !== gen || roomCodeRef.current !== code) return
+        if (res.status === 409) {
+          const data = (await res.json()) as {
+            room?: { updatedAt: string; accounts: ZeusAccount[] }
+          }
+          const server = data.room
+          if (!server || attempt >= 4) {
+            if (server) {
+              skipNextRemoteSave.current = true
+              roomBaselineRef.current = server.accounts
+              roomUpdatedAt.current = server.updatedAt
+              roomDirtyRef.current = false
+              setAccounts(server.accounts)
+              showToast("다른 수정과 겹쳐 공유 목록을 서버 기준으로 맞췄습니다.")
+            }
+            return
+          }
+          const merged = mergeRoomEdits(
+            roomBaselineRef.current,
+            accountsRef.current,
+            server.accounts
+          )
+          roomBaselineRef.current = server.accounts
+          roomUpdatedAt.current = server.updatedAt
+          if (!sameAccountList(merged, accountsRef.current)) {
+            roomDirtyRef.current = true
+            setAccounts(merged)
+            return
+          }
+          if (!sameAccountList(merged, server.accounts)) {
+            await push(merged, server.updatedAt, attempt + 1)
+            return
+          }
+          roomDirtyRef.current = false
+          return
         }
+        if (!res.ok) {
+          let message = "공유 방 저장에 실패했습니다."
+          try {
+            const data = (await res.json()) as { error?: unknown }
+            if (typeof data.error === "string") message = data.error
+          } catch {
+            // ignore a non-JSON error body
+          }
+          showToast(message)
+          return
+        }
+        const room = (await res.json()) as { updatedAt: string }
+        if (saveGenRef.current !== gen || roomCodeRef.current !== code) return
+        roomUpdatedAt.current = room.updatedAt
+        roomBaselineRef.current = bodyAccounts
+        roomDirtyRef.current = false
       } catch {
         // ignore transient sync errors
       } finally {
-        setSyncing(false)
+        if (saveGenRef.current === gen) setSyncing(false)
       }
+    }
+
+    const id = window.setTimeout(() => {
+      void push(snapshot, baseUpdatedAt, 0)
     }, 450)
     return () => window.clearTimeout(id)
   }, [accounts, ready, roomCode])
 
   useEffect(() => {
     if (!ready || !roomCode) return
+    const code = roomCode
     const id = window.setInterval(async () => {
+      if (roomDirtyRef.current) return
       try {
-        const res = await fetch(`/api/rooms/${encodeURIComponent(roomCode)}`)
-        if (!res.ok) return
+        const res = await fetch(`/api/rooms/${encodeURIComponent(code)}`)
+        if (!res.ok) {
+          if (res.status !== 404 && roomErrorRef.current !== String(res.status)) {
+            roomErrorRef.current = String(res.status)
+            let message = ""
+            try {
+              const data = (await res.json()) as { error?: unknown }
+              if (typeof data.error === "string") message = data.error
+            } catch {
+              // ignore a non-JSON error body
+            }
+            if (message) showToast(message)
+          }
+          return
+        }
+        roomErrorRef.current = null
         const room = (await res.json()) as {
           updatedAt: string
           accounts: ZeusAccount[]
         }
+        if (roomCodeRef.current !== code || roomDirtyRef.current) return
         if (
-          room.updatedAt &&
-          room.updatedAt !== roomUpdatedAt.current
+          !room.updatedAt ||
+          room.updatedAt <= (roomUpdatedAt.current ?? "")
         ) {
-          skipNextRemoteSave.current = true
-          roomUpdatedAt.current = room.updatedAt
-          setAccounts(room.accounts)
+          return
         }
+        skipNextRemoteSave.current = true
+        roomBaselineRef.current = room.accounts
+        roomUpdatedAt.current = room.updatedAt
+        setAccounts(room.accounts)
       } catch {
         // ignore poll errors
       }
@@ -194,33 +297,32 @@ export function AccountManager() {
     setToast(message)
   }
 
-  function handleJoined(code: string, nextAccounts: ZeusAccount[]) {
-    const personal = accounts
-    personalBackupRef.current = personal
-    const merged = mergeAccounts(personal, nextAccounts)
-    const broughtPersonal = merged.length > nextAccounts.length
-    skipNextRemoteSave.current = !broughtPersonal
-    roomUpdatedAt.current = broughtPersonal
-      ? null
-      : new Date().toISOString()
+  function handleJoined(
+    code: string,
+    nextAccounts: ZeusAccount[],
+    updatedAt: string
+  ) {
+    personalBackupRef.current = accounts
+    skipNextRemoteSave.current = true
+    roomDirtyRef.current = false
+    roomUpdatedAt.current = updatedAt
+    roomBaselineRef.current = nextAccounts
     setRoomCode(code)
     saveRoomCode(code)
-    setAccounts(merged)
+    setAccounts(nextAccounts)
     window.history.replaceState({}, "", `/?room=${code}`)
-    if (broughtPersonal) {
-      showToast(
-        `${code} 방 참가 · 내 계정 ${merged.length - nextAccounts.length}개를 방에 합쳤습니다.`
-      )
-    }
   }
 
   function handleLeft() {
-    const personal =
-      personalBackupRef.current ?? loadAccounts()
+    const personal = personalBackupRef.current ?? loadAccounts()
     personalBackupRef.current = null
+    skipNextRemoteSave.current = true
+    roomDirtyRef.current = false
+    roomUpdatedAt.current = null
+    roomBaselineRef.current = []
+    saveGenRef.current += 1
     setRoomCode(null)
     saveRoomCode(null)
-    roomUpdatedAt.current = null
     setAccounts(personal.length > 0 ? personal : SEED_ACCOUNTS)
     window.history.replaceState({}, "", "/")
     showToast("공유 방에서 나갔습니다. 내 개인 목록으로 돌아갑니다.")
@@ -230,12 +332,16 @@ export function AccountManager() {
     const q = deferredQuery.trim().toLowerCase()
     let list = accounts.filter((account) => {
       if (statusFilter !== "all" && account.status !== statusFilter) return false
+      if (gameFilter !== "all" && account.game !== gameFilter) return false
       if (!q) return true
       return (
         account.username.toLowerCase().includes(q) ||
         account.characterName.toLowerCase().includes(q) ||
         account.server.toLowerCase().includes(q) ||
-        account.notes.toLowerCase().includes(q)
+        account.notes.toLowerCase().includes(q) ||
+        account.game.toLowerCase().includes(q) ||
+        gameLabel(account.game).toLowerCase().includes(q) ||
+        gameBadge(account.game).toLowerCase().includes(q)
       )
     })
 
@@ -246,7 +352,7 @@ export function AccountManager() {
       return b.updatedAt.localeCompare(a.updatedAt)
     })
     return list
-  }, [accounts, deferredQuery, statusFilter, sortKey])
+  }, [accounts, deferredQuery, gameFilter, statusFilter, sortKey])
 
   const stats = useMemo(() => {
     const total = accounts.length
@@ -419,13 +525,16 @@ export function AccountManager() {
       />
 
       <section className="zeus-panel animate-rise-delay rounded-2xl p-4 sm:p-5">
+        <p className="mb-3 text-sm text-[var(--zeus-ivory)]">
+          {roomCode ? `공유 계정 · ${roomCode}` : "개인 계정"}
+        </p>
         <div className="flex flex-col gap-3 lg:flex-row lg:items-center">
           <div className="relative flex-1">
             <Search className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
             <Input
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="아이디, 캐릭터, 서버, 메모 검색"
+              placeholder="아이디, 캐릭터, 서버, 메모, 게임 검색"
               className="pl-8"
               aria-label="계정 검색"
             />
@@ -445,6 +554,19 @@ export function AccountManager() {
                   </option>
                 )
               )}
+            </select>
+            <select
+              aria-label="게임 필터"
+              value={gameFilter}
+              onChange={(e) => setGameFilter(e.target.value)}
+              className="h-8 rounded-lg border border-input bg-transparent px-2.5 text-sm"
+            >
+              <option value="all">모든 게임</option>
+              {GAMES.map((game) => (
+                <option key={game.id} value={game.id}>
+                  {game.label}
+                </option>
+              ))}
             </select>
             <select
               aria-label="정렬"
@@ -496,6 +618,12 @@ export function AccountManager() {
                 >
                   <div className="min-w-0 space-y-1.5">
                     <div className="flex flex-wrap items-center gap-2">
+                      <Badge
+                        variant="outline"
+                        className="border-[var(--zeus-gold)]/40 font-mono text-[0.65rem] tracking-wide text-[var(--zeus-gold)]"
+                      >
+                        {gameBadge(account.game)}
+                      </Badge>
                       <p className="font-[family-name:var(--font-display)] text-lg tracking-wide text-[var(--zeus-ivory)]">
                         {account.characterName}
                       </p>
