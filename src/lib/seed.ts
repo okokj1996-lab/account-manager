@@ -1,0 +1,43 @@
+import type { ZeusAccount } from "@/lib/types"
+
+export const SEED_ACCOUNTS: ZeusAccount[] = [
+  {
+    id: "seed-1",
+    username: "zeus_main",
+    password: "Thunder!2026",
+    characterName: "제우스",
+    server: "올림푸스-1",
+    level: 87,
+    status: "active",
+    notes: "메인 계정. 길드장.",
+    lastPlayedAt: "2026-10-06",
+    createdAt: "2026-01-12T09:00:00.000Z",
+    updatedAt: "2026-10-06T18:20:00.000Z",
+  },
+  {
+    id: "seed-2",
+    username: "athena_alt",
+    password: "OwlShield88",
+    characterName: "아테나",
+    server: "폭풍의 요새",
+    level: 64,
+    status: "resting",
+    notes: "부계정. 제작 전용.",
+    lastPlayedAt: "2026-09-20",
+    createdAt: "2026-03-02T11:30:00.000Z",
+    updatedAt: "2026-09-20T14:05:00.000Z",
+  },
+  {
+    id: "seed-3",
+    username: "hermes_trade",
+    password: "WingedBoot#1",
+    characterName: "헤르메스",
+    server: "번개의 전장",
+    level: 51,
+    status: "shared",
+    notes: "거래용. 친구와 공유 중.",
+    lastPlayedAt: "2026-10-05",
+    createdAt: "2026-05-18T08:15:00.000Z",
+    updatedAt: "2026-10-05T21:40:00.000Z",
+  },
+]
