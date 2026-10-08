@@ -5,6 +5,7 @@ import {
 } from "@/lib/password-crypto"
 import { readVault, writeVault } from "@/lib/rooms"
 import { filterAccounts } from "@/lib/validate"
+import { requireVaultSession } from "@/lib/vault-auth"
 
 function failureResponse(error: unknown): NextResponse {
   const message = encryptionErrorMessage(error)
@@ -43,6 +44,8 @@ function failureResponse(error: unknown): NextResponse {
 }
 
 export async function GET() {
+  const denied = await requireVaultSession()
+  if (denied) return denied
   try {
     const vault = await readVault()
     return NextResponse.json(vault)
@@ -52,6 +55,8 @@ export async function GET() {
 }
 
 export async function PUT(request: Request) {
+  const denied = await requireVaultSession()
+  if (denied) return denied
   try {
     const body = (await request.json()) as {
       accounts?: unknown

@@ -7,6 +7,7 @@ import {
   EyeOff,
   FileDown,
   FileUp,
+  Lock,
   MoreHorizontal,
   Pencil,
   Plus,
@@ -48,7 +49,7 @@ const STATUS_BADGE: Record<
   shared: "outline",
 }
 
-export function AccountManager() {
+export function AccountManager({ onUnauthorized }: { onUnauthorized: () => void }) {
   const [accounts, setAccounts] = useState<ZeusAccount[]>([])
   const [ready, setReady] = useState(false)
   const [vaultOnline, setVaultOnline] = useState(false)
@@ -72,13 +73,26 @@ export function AccountManager() {
   const accountsRef = useRef(accounts)
   const vaultOnlineRef = useRef(false)
   const vaultErrorRef = useRef<string | null>(null)
+  const onUnauthorizedRef = useRef(onUnauthorized)
   accountsRef.current = accounts
   vaultOnlineRef.current = vaultOnline
+  onUnauthorizedRef.current = onUnauthorized
+
+  function deny(res: Response) {
+    if (res.status !== 401) return false
+    setVaultOnline(false)
+    onUnauthorizedRef.current()
+    return true
+  }
 
   useEffect(() => {
     async function boot() {
       try {
         const res = await fetch("/api/vault")
+        if (deny(res)) {
+          setReady(true)
+          return
+        }
         if (!res.ok) {
           let message = "공용 Vault를 불러오지 못했습니다."
           try {
@@ -136,6 +150,7 @@ export function AccountManager() {
           }),
         })
         if (saveGenRef.current !== gen || !vaultOnlineRef.current) return
+        if (deny(res)) return
         if (res.status === 409) {
           const data = (await res.json()) as {
             room?: { updatedAt: string; accounts: ZeusAccount[] }
@@ -206,6 +221,7 @@ export function AccountManager() {
       if (vaultDirtyRef.current) return
       try {
         const res = await fetch("/api/vault")
+        if (deny(res)) return
         if (!res.ok) {
           if (vaultErrorRef.current !== String(res.status)) {
             vaultErrorRef.current = String(res.status)
@@ -253,6 +269,21 @@ export function AccountManager() {
 
   function showToast(message: string) {
     setToast(message)
+  }
+
+  async function lockVault() {
+    try {
+      const res = await fetch("/api/vault/session", { method: "DELETE" })
+      if (!res.ok) {
+        showToast("잠금에 실패했습니다.")
+        return
+      }
+    } catch {
+      showToast("잠금에 실패했습니다.")
+      return
+    }
+    setVaultOnline(false)
+    onUnauthorizedRef.current()
   }
 
   const filtered = useMemo(() => {
@@ -412,6 +443,10 @@ export function AccountManager() {
             >
               <FileUp className="size-4" />
               가져오기
+            </Button>
+            <Button type="button" variant="outline" onClick={() => void lockVault()} className="gap-1.5">
+              <Lock className="size-4" />
+              잠금
             </Button>
             <input
               ref={fileInputRef}

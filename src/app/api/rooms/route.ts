@@ -5,8 +5,11 @@ import {
 } from "@/lib/password-crypto"
 import { createRoom, hasCloudRoomStore, isServerlessRuntime } from "@/lib/rooms"
 import { filterAccounts } from "@/lib/validate"
+import { requireVaultSession } from "@/lib/vault-auth"
 
 export async function POST(request: Request) {
+  const denied = await requireVaultSession()
+  if (denied) return denied
   try {
     if (isServerlessRuntime() && !hasCloudRoomStore()) {
       return NextResponse.json(

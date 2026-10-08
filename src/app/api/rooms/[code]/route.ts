@@ -5,6 +5,7 @@ import {
 } from "@/lib/password-crypto"
 import { normalizeRoomCode, readRoom, writeRoom } from "@/lib/rooms"
 import { filterAccounts } from "@/lib/validate"
+import { requireVaultSession } from "@/lib/vault-auth"
 
 function encryptionResponse(error: unknown): NextResponse | null {
   const message = encryptionErrorMessage(error)
@@ -22,6 +23,8 @@ type RouteContext = {
 }
 
 export async function GET(_request: Request, context: RouteContext) {
+  const denied = await requireVaultSession()
+  if (denied) return denied
   const { code: raw } = await context.params
   const code = normalizeRoomCode(raw)
   if (!code) {
@@ -42,6 +45,8 @@ export async function GET(_request: Request, context: RouteContext) {
 }
 
 export async function PUT(request: Request, context: RouteContext) {
+  const denied = await requireVaultSession()
+  if (denied) return denied
   const { code: raw } = await context.params
   const code = normalizeRoomCode(raw)
   if (!code) {
