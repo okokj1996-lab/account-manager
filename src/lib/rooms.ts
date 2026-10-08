@@ -482,3 +482,231 @@ export async function writeRoom(
   if (isServerlessRuntime()) return { ok: false, reason: "missing" }
   return writeRoomFile(normalized, accounts, baseUpdatedAt)
 }
+
+export const VAULT_REDIS_KEY = "olympus:vault:main"
+const VAULT_CODE = "main"
+const VAULT_LOCK = "olympus:vault:main"
+const VAULT_DIR = path.join(process.cwd(), ".data", "vault")
+const VAULT_FILE = path.join(VAULT_DIR, "main.json")
+
+function emptyVault(): RoomData {
+  return {
+    code: VAULT_CODE,
+    createdAt: "",
+    updatedAt: "",
+    accounts: [],
+  }
+}
+
+async function readVaultFile(): Promise<ParsedRoom | null> {
+  let raw: string
+  try {
+    raw = await fs.readFile(VAULT_FILE, "utf8")
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null
+    throw error
+  }
+  const parsed = parseRoom(JSON.parse(raw) as unknown, VAULT_CODE)
+  if (!parsed) throw new Error("VAULT_INVALID")
+  return parsed
+}
+
+async function replaceVaultFile(room: StoredRoom): Promise<void> {
+  await fs.mkdir(VAULT_DIR, { recursive: true })
+  const temp = path.join(VAULT_DIR, `.main.${process.pid}.tmp`)
+  const backup = path.join(VAULT_DIR, `.main.${process.pid}.bak`)
+  await fs.writeFile(temp, JSON.stringify(room, null, 2), "utf8")
+  let movedAside = false
+  try {
+    await fs.rename(VAULT_FILE, backup)
+    movedAside = true
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+  }
+  try {
+    await fs.rename(temp, VAULT_FILE)
+  } catch (error) {
+    if (movedAside) await fs.rename(backup, VAULT_FILE).catch(() => undefined)
+    throw error
+  }
+  if (movedAside) await fs.rm(backup, { force: true }).catch(() => undefined)
+}
+
+async function migrateVaultFile(seenUpdatedAt: string): Promise<void> {
+  if (!isEncryptionKeyConfigured()) return
+  await enqueueRoomWrite(VAULT_LOCK, async () => {
+    let raw: string
+    try {
+      raw = await fs.readFile(VAULT_FILE, "utf8")
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return
+      throw error
+    }
+    const stored = JSON.parse(raw) as { code?: unknown; updatedAt?: unknown }
+    if (stored.code !== VAULT_CODE || stored.updatedAt !== seenUpdatedAt) return
+    if (!hasPlaintextPassword(stored)) return
+    await replaceVaultFile(sealRawPasswords(stored))
+  })
+}
+
+async function readVaultRedis(redis: Redis): Promise<ParsedRoom | null> {
+  const value = await redis.get<unknown>(VAULT_REDIS_KEY)
+  if (value == null) return null
+  const parsed = parseRoom(value, VAULT_CODE)
+  if (!parsed) throw new Error("VAULT_INVALID")
+  return parsed
+}
+
+async function migrateVaultRedis(
+  redis: Redis,
+  seenUpdatedAt: string
+): Promise<void> {
+  if (!isEncryptionKeyConfigured()) return
+  await enqueueRoomWrite(VAULT_LOCK, async () => {
+    const lockKey = `${VAULT_REDIS_KEY}:lock`
+    const locked = await redis.set(lockKey, "1", { nx: true, ex: 5 })
+    if (locked !== "OK") return
+    try {
+      const stored = await redis.get<unknown>(VAULT_REDIS_KEY)
+      if (!stored || typeof stored !== "object") return
+      const record = stored as { code?: unknown; updatedAt?: unknown }
+      if (record.code !== VAULT_CODE || record.updatedAt !== seenUpdatedAt) return
+      if (!hasPlaintextPassword(stored)) return
+      await redis.set(VAULT_REDIS_KEY, sealRawPasswords(stored))
+    } finally {
+      try {
+        await redis.del(lockKey)
+      } catch {
+        // The lock expires after 5 seconds if delete fails.
+      }
+    }
+  })
+}
+
+function vaultFromAccounts(
+  existing: RoomData | null,
+  accounts: ZeusAccount[]
+): RoomData {
+  const now = new Date().toISOString()
+  return {
+    code: VAULT_CODE,
+    createdAt: existing?.createdAt || now,
+    updatedAt: now,
+    accounts: filterAccounts(accounts),
+  }
+}
+
+async function writeVaultFile(
+  accounts: ZeusAccount[],
+  baseUpdatedAt?: string
+): Promise<RoomWriteResult> {
+  return enqueueRoomWrite(VAULT_LOCK, async () => {
+    const existing = await readVaultFile()
+    if (!existing) {
+      const room = vaultFromAccounts(null, accounts)
+      await fs.mkdir(VAULT_DIR, { recursive: true })
+      try {
+        await fs.writeFile(VAULT_FILE, JSON.stringify(toStoredRoom(room), null, 2), {
+          encoding: "utf8",
+          flag: "wx",
+        })
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error
+        const current = await readVaultFile()
+        if (!current) return { ok: false, reason: "missing" }
+        return { ok: false, reason: "conflict", room: current.room }
+      }
+      return { ok: true, room }
+    }
+    if (
+      (baseUpdatedAt && existing.room.updatedAt !== baseUpdatedAt) ||
+      (!baseUpdatedAt && existing.room.updatedAt)
+    ) {
+      return { ok: false, reason: "conflict", room: existing.room }
+    }
+    const room = vaultFromAccounts(existing.room, accounts)
+    await replaceVaultFile(toStoredRoom(room))
+    return { ok: true, room }
+  })
+}
+
+async function writeVaultRedis(
+  redis: Redis,
+  accounts: ZeusAccount[],
+  baseUpdatedAt?: string
+): Promise<RoomWriteResult> {
+  return enqueueRoomWrite(VAULT_LOCK, async () => {
+    const lockKey = `${VAULT_REDIS_KEY}:lock`
+    const locked = await redis.set(lockKey, "1", { nx: true, ex: 5 })
+    if (locked !== "OK") {
+      const current = await readVaultRedis(redis)
+      if (!current) return { ok: false, reason: "missing" }
+      return { ok: false, reason: "conflict", room: current.room }
+    }
+    try {
+      const existing = await readVaultRedis(redis)
+      if (!existing) {
+        const room = vaultFromAccounts(null, accounts)
+        const saved = await redis.set(VAULT_REDIS_KEY, toStoredRoom(room), {
+          nx: true,
+        })
+        if (saved === "OK") return { ok: true, room }
+        const current = await readVaultRedis(redis)
+        if (!current) return { ok: false, reason: "missing" }
+        return { ok: false, reason: "conflict", room: current.room }
+      }
+      if (
+        (baseUpdatedAt && existing.room.updatedAt !== baseUpdatedAt) ||
+        (!baseUpdatedAt && existing.room.updatedAt)
+      ) {
+        return { ok: false, reason: "conflict", room: existing.room }
+      }
+      const room = vaultFromAccounts(existing.room, accounts)
+      await redis.set(VAULT_REDIS_KEY, toStoredRoom(room))
+      return { ok: true, room }
+    } finally {
+      try {
+        await redis.del(lockKey)
+      } catch {
+        // The lock expires after 5 seconds if delete fails.
+      }
+    }
+  })
+}
+
+export async function readVault(): Promise<RoomData> {
+  const redis = redisFromEnv()
+  if (!redis && isServerlessRuntime()) {
+    throw new Error(
+      "CLOUD_STORE_MISSING: Vercel에서 Upstash Redis(KV)를 연결해야 공유 계정을 쓸 수 있습니다."
+    )
+  }
+  const parsed = redis ? await readVaultRedis(redis) : await readVaultFile()
+  if (!parsed) return emptyVault()
+  if (parsed.needsMigration && isEncryptionKeyConfigured()) {
+    try {
+      if (redis) await migrateVaultRedis(redis, parsed.room.updatedAt)
+      else await migrateVaultFile(parsed.room.updatedAt)
+    } catch (error) {
+      console.error(
+        "[vault] password migration skipped",
+        error instanceof Error ? error.message : "unknown"
+      )
+    }
+  }
+  return parsed.room
+}
+
+export async function writeVault(
+  accounts: ZeusAccount[],
+  baseUpdatedAt?: string
+): Promise<RoomWriteResult> {
+  const redis = redisFromEnv()
+  if (!redis && isServerlessRuntime()) {
+    throw new Error(
+      "CLOUD_STORE_MISSING: Vercel에서 Upstash Redis(KV)를 연결해야 공유 계정을 쓸 수 있습니다."
+    )
+  }
+  if (redis) return writeVaultRedis(redis, accounts, baseUpdatedAt)
+  return writeVaultFile(accounts, baseUpdatedAt)
+}

@@ -129,8 +129,8 @@ export function AccountFormDialog({
               {account ? "계정 수정" : "계정 추가"}
             </DialogTitle>
             <DialogDescription>
-              게임과 계정 정보를 입력하세요. 데이터는 이 브라우저에만
-              저장됩니다.
+              게임과 계정 정보를 입력하세요. 같은 주소로 접속한 사람과
+              이 목록을 함께 씁니다.
             </DialogDescription>
           </DialogHeader>
 

@@ -15,7 +15,6 @@ import {
   Zap,
 } from "lucide-react"
 import { AccountFormDialog } from "@/components/account-form-dialog"
-import { SharePanel } from "@/components/share-panel"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
@@ -28,15 +27,7 @@ import {
 import { Input } from "@/components/ui/input"
 import { Separator } from "@/components/ui/separator"
 import { gameBadge, gameLabel, GAMES } from "@/lib/games"
-import { SEED_ACCOUNTS } from "@/lib/seed"
-import {
-  loadAccounts,
-  loadRoomCode,
-  mergeRoomEdits,
-  sameAccountList,
-  saveAccounts,
-  saveRoomCode,
-} from "@/lib/storage"
+import { mergeRoomEdits, sameAccountList } from "@/lib/storage"
 import {
   ACCOUNT_STATUS_LABELS,
   type AccountStatus,
@@ -58,9 +49,9 @@ const STATUS_BADGE: Record<
 }
 
 export function AccountManager() {
-  const [accounts, setAccounts] = useState<ZeusAccount[]>(SEED_ACCOUNTS)
+  const [accounts, setAccounts] = useState<ZeusAccount[]>([])
   const [ready, setReady] = useState(false)
-  const [roomCode, setRoomCode] = useState<string | null>(null)
+  const [vaultOnline, setVaultOnline] = useState(false)
   const [syncing, setSyncing] = useState(false)
   const [query, setQuery] = useState("")
   const [deferredQuery, setDeferredQuery] = useState("")
@@ -74,66 +65,44 @@ export function AccountManager() {
   const [isPending, startTransition] = useTransition()
   const fileInputRef = useRef<HTMLInputElement>(null)
   const skipNextRemoteSave = useRef(false)
-  const roomUpdatedAt = useRef<string | null>(null)
-  const roomBaselineRef = useRef<ZeusAccount[]>([])
-  const roomDirtyRef = useRef(false)
+  const vaultUpdatedAt = useRef<string | null>(null)
+  const vaultBaselineRef = useRef<ZeusAccount[]>([])
+  const vaultDirtyRef = useRef(false)
   const saveGenRef = useRef(0)
   const accountsRef = useRef(accounts)
-  const roomCodeRef = useRef(roomCode)
-  const personalBackupRef = useRef<ZeusAccount[] | null>(null)
-  const roomErrorRef = useRef<string | null>(null)
+  const vaultOnlineRef = useRef(false)
+  const vaultErrorRef = useRef<string | null>(null)
   accountsRef.current = accounts
-  roomCodeRef.current = roomCode
+  vaultOnlineRef.current = vaultOnline
 
   useEffect(() => {
     async function boot() {
-      const stored = loadAccounts()
-      if (stored.length > 0) setAccounts(stored)
-
-      const params = new URLSearchParams(window.location.search)
-      const fromUrl = params.get("room")?.trim().toUpperCase() ?? null
-      const saved = loadRoomCode()
-      const initialRoom = fromUrl || saved
-
-      if (initialRoom) {
-        try {
-          const res = await fetch(
-            `/api/rooms/${encodeURIComponent(initialRoom)}`
-          )
-          if (res.ok) {
-            const room = (await res.json()) as {
-              code: string
-              updatedAt: string
-              accounts: ZeusAccount[]
-            }
-            personalBackupRef.current = stored
-            skipNextRemoteSave.current = true
-            roomDirtyRef.current = false
-            roomUpdatedAt.current = room.updatedAt
-            roomBaselineRef.current = room.accounts
-            setAccounts(room.accounts)
-            setRoomCode(room.code)
-            saveRoomCode(room.code)
-            if (fromUrl) {
-              window.history.replaceState({}, "", `/?room=${room.code}`)
-            }
-          } else {
-            let message = ""
-            try {
-              const data = (await res.json()) as { error?: unknown }
-              if (typeof data.error === "string") message = data.error
-            } catch {
-              // ignore a non-JSON error body
-            }
-            if (res.status === 404 && saved && !fromUrl) {
-              saveRoomCode(null)
-            } else if (message) {
-              showToast(message)
-            }
+      try {
+        const res = await fetch("/api/vault")
+        if (!res.ok) {
+          let message = "공용 Vault를 불러오지 못했습니다."
+          try {
+            const data = (await res.json()) as { error?: unknown }
+            if (typeof data.error === "string") message = data.error
+          } catch {
+            // ignore a non-JSON error body
           }
-        } catch {
-          // keep local accounts if room is unreachable
+          showToast(message)
+          setReady(true)
+          return
         }
+        const vault = (await res.json()) as {
+          updatedAt?: string
+          accounts?: ZeusAccount[]
+        }
+        skipNextRemoteSave.current = true
+        vaultDirtyRef.current = false
+        vaultUpdatedAt.current = vault.updatedAt || null
+        vaultBaselineRef.current = vault.accounts ?? []
+        setAccounts(vault.accounts ?? [])
+        setVaultOnline(true)
+      } catch {
+        showToast("공용 Vault를 불러오지 못했습니다.")
       }
       setReady(true)
     }
@@ -141,31 +110,24 @@ export function AccountManager() {
   }, [])
 
   useEffect(() => {
-    // Keep personal browser list intact while inside a shared room.
-    if (!ready || roomCode) return
-    saveAccounts(accounts)
-  }, [accounts, ready, roomCode])
-
-  useEffect(() => {
-    if (!ready || !roomCode) return
+    if (!ready || !vaultOnline) return
     if (skipNextRemoteSave.current) {
       skipNextRemoteSave.current = false
-      roomDirtyRef.current = false
+      vaultDirtyRef.current = false
       return
     }
 
     const gen = saveGenRef.current + 1
     saveGenRef.current = gen
-    const code = roomCode
     const snapshot = accounts
-    const baseUpdatedAt = roomUpdatedAt.current
-    roomDirtyRef.current = true
+    const baseUpdatedAt = vaultUpdatedAt.current
+    vaultDirtyRef.current = true
 
     async function push(bodyAccounts: ZeusAccount[], base: string | null, attempt: number) {
-      if (saveGenRef.current !== gen || roomCodeRef.current !== code) return
+      if (saveGenRef.current !== gen || !vaultOnlineRef.current) return
       setSyncing(true)
       try {
-        const res = await fetch(`/api/rooms/${encodeURIComponent(code)}`, {
+        const res = await fetch("/api/vault", {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -173,7 +135,7 @@ export function AccountManager() {
             baseUpdatedAt: base,
           }),
         })
-        if (saveGenRef.current !== gen || roomCodeRef.current !== code) return
+        if (saveGenRef.current !== gen || !vaultOnlineRef.current) return
         if (res.status === 409) {
           const data = (await res.json()) as {
             room?: { updatedAt: string; accounts: ZeusAccount[] }
@@ -182,23 +144,23 @@ export function AccountManager() {
           if (!server || attempt >= 4) {
             if (server) {
               skipNextRemoteSave.current = true
-              roomBaselineRef.current = server.accounts
-              roomUpdatedAt.current = server.updatedAt
-              roomDirtyRef.current = false
+              vaultBaselineRef.current = server.accounts
+              vaultUpdatedAt.current = server.updatedAt
+              vaultDirtyRef.current = false
               setAccounts(server.accounts)
-              showToast("다른 수정과 겹쳐 공유 목록을 서버 기준으로 맞췄습니다.")
+              showToast("다른 수정과 겹쳐 공용 목록을 서버 기준으로 맞췄습니다.")
             }
             return
           }
           const merged = mergeRoomEdits(
-            roomBaselineRef.current,
+            vaultBaselineRef.current,
             accountsRef.current,
             server.accounts
           )
-          roomBaselineRef.current = server.accounts
-          roomUpdatedAt.current = server.updatedAt
+          vaultBaselineRef.current = server.accounts
+          vaultUpdatedAt.current = server.updatedAt
           if (!sameAccountList(merged, accountsRef.current)) {
-            roomDirtyRef.current = true
+            vaultDirtyRef.current = true
             setAccounts(merged)
             return
           }
@@ -206,11 +168,11 @@ export function AccountManager() {
             await push(merged, server.updatedAt, attempt + 1)
             return
           }
-          roomDirtyRef.current = false
+          vaultDirtyRef.current = false
           return
         }
         if (!res.ok) {
-          let message = "공유 방 저장에 실패했습니다."
+          let message = "공용 Vault 저장에 실패했습니다."
           try {
             const data = (await res.json()) as { error?: unknown }
             if (typeof data.error === "string") message = data.error
@@ -220,11 +182,11 @@ export function AccountManager() {
           showToast(message)
           return
         }
-        const room = (await res.json()) as { updatedAt: string }
-        if (saveGenRef.current !== gen || roomCodeRef.current !== code) return
-        roomUpdatedAt.current = room.updatedAt
-        roomBaselineRef.current = bodyAccounts
-        roomDirtyRef.current = false
+        const vault = (await res.json()) as { updatedAt: string }
+        if (saveGenRef.current !== gen || !vaultOnlineRef.current) return
+        vaultUpdatedAt.current = vault.updatedAt
+        vaultBaselineRef.current = bodyAccounts
+        vaultDirtyRef.current = false
       } catch {
         // ignore transient sync errors
       } finally {
@@ -236,18 +198,17 @@ export function AccountManager() {
       void push(snapshot, baseUpdatedAt, 0)
     }, 450)
     return () => window.clearTimeout(id)
-  }, [accounts, ready, roomCode])
+  }, [accounts, ready, vaultOnline])
 
   useEffect(() => {
-    if (!ready || !roomCode) return
-    const code = roomCode
+    if (!ready || !vaultOnline) return
     const id = window.setInterval(async () => {
-      if (roomDirtyRef.current) return
+      if (vaultDirtyRef.current) return
       try {
-        const res = await fetch(`/api/rooms/${encodeURIComponent(code)}`)
+        const res = await fetch("/api/vault")
         if (!res.ok) {
-          if (res.status !== 404 && roomErrorRef.current !== String(res.status)) {
-            roomErrorRef.current = String(res.status)
+          if (vaultErrorRef.current !== String(res.status)) {
+            vaultErrorRef.current = String(res.status)
             let message = ""
             try {
               const data = (await res.json()) as { error?: unknown }
@@ -259,28 +220,25 @@ export function AccountManager() {
           }
           return
         }
-        roomErrorRef.current = null
-        const room = (await res.json()) as {
+        vaultErrorRef.current = null
+        const vault = (await res.json()) as {
           updatedAt: string
           accounts: ZeusAccount[]
         }
-        if (roomCodeRef.current !== code || roomDirtyRef.current) return
-        if (
-          !room.updatedAt ||
-          room.updatedAt <= (roomUpdatedAt.current ?? "")
-        ) {
+        if (!vaultOnlineRef.current || vaultDirtyRef.current) return
+        if (!vault.updatedAt || vault.updatedAt <= (vaultUpdatedAt.current ?? "")) {
           return
         }
         skipNextRemoteSave.current = true
-        roomBaselineRef.current = room.accounts
-        roomUpdatedAt.current = room.updatedAt
-        setAccounts(room.accounts)
+        vaultBaselineRef.current = vault.accounts
+        vaultUpdatedAt.current = vault.updatedAt
+        setAccounts(vault.accounts)
       } catch {
         // ignore poll errors
       }
     }, 3000)
     return () => window.clearInterval(id)
-  }, [ready, roomCode])
+  }, [ready, vaultOnline])
 
   useEffect(() => {
     const id = window.setTimeout(() => setDeferredQuery(query), 120)
@@ -295,37 +253,6 @@ export function AccountManager() {
 
   function showToast(message: string) {
     setToast(message)
-  }
-
-  function handleJoined(
-    code: string,
-    nextAccounts: ZeusAccount[],
-    updatedAt: string
-  ) {
-    personalBackupRef.current = accounts
-    skipNextRemoteSave.current = true
-    roomDirtyRef.current = false
-    roomUpdatedAt.current = updatedAt
-    roomBaselineRef.current = nextAccounts
-    setRoomCode(code)
-    saveRoomCode(code)
-    setAccounts(nextAccounts)
-    window.history.replaceState({}, "", `/?room=${code}`)
-  }
-
-  function handleLeft() {
-    const personal = personalBackupRef.current ?? loadAccounts()
-    personalBackupRef.current = null
-    skipNextRemoteSave.current = true
-    roomDirtyRef.current = false
-    roomUpdatedAt.current = null
-    roomBaselineRef.current = []
-    saveGenRef.current += 1
-    setRoomCode(null)
-    saveRoomCode(null)
-    setAccounts(personal.length > 0 ? personal : SEED_ACCOUNTS)
-    window.history.replaceState({}, "", "/")
-    showToast("공유 방에서 나갔습니다. 내 개인 목록으로 돌아갑니다.")
   }
 
   const filtered = useMemo(() => {
@@ -448,13 +375,6 @@ export function AccountManager() {
     reader.readAsText(file)
   }
 
-  function resetDemo() {
-    if (!window.confirm("데모 계정으로 초기화할까요? 현재 목록은 덮어씁니다."))
-      return
-    setAccounts(SEED_ACCOUNTS)
-    showToast("데모 계정으로 초기화했습니다.")
-  }
-
   return (
     <div className="relative mx-auto flex w-full max-w-5xl flex-col gap-6 px-4 py-8 sm:px-6 lg:py-10">
       <header className="zeus-panel animate-rise overflow-hidden rounded-2xl px-5 py-6 sm:px-8 sm:py-8">
@@ -468,8 +388,7 @@ export function AccountManager() {
               ZEUS
             </h1>
             <p className="max-w-md text-sm leading-relaxed text-[var(--zeus-mist)]">
-              제우스 게임 계정을 한곳에서 관리하세요. 혼자 쓰거나, 공유 방으로
-              친구와 같은 목록을 함께 쓸 수 있습니다.
+              게임 계정을 하나의 공용 목록으로 함께 관리합니다.
             </p>
           </div>
           <div className="relative z-10 flex flex-wrap gap-2">
@@ -515,19 +434,7 @@ export function AccountManager() {
         </div>
       </header>
 
-      <SharePanel
-        roomCode={roomCode}
-        syncing={syncing}
-        accounts={accounts}
-        onJoined={handleJoined}
-        onLeft={handleLeft}
-        onToast={showToast}
-      />
-
       <section className="zeus-panel animate-rise-delay rounded-2xl p-4 sm:p-5">
-        <p className="mb-3 text-sm text-[var(--zeus-ivory)]">
-          {roomCode ? `공유 계정 · ${roomCode}` : "개인 계정"}
-        </p>
         <div className="flex flex-col gap-3 lg:flex-row lg:items-center">
           <div className="relative flex-1">
             <Search className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
@@ -578,9 +485,11 @@ export function AccountManager() {
               <option value="level">레벨 높은순</option>
               <option value="name">캐릭터명</option>
             </select>
-            <Button variant="ghost" onClick={resetDemo}>
-              데모 초기화
-            </Button>
+            {syncing ? (
+              <span className="self-center text-xs text-muted-foreground">
+                동기화 중…
+              </span>
+            ) : null}
           </div>
         </div>
 
@@ -591,7 +500,7 @@ export function AccountManager() {
             title={accounts.length === 0 ? "계정이 없습니다" : "검색 결과 없음"}
             description={
               accounts.length === 0
-                ? "첫 계정을 추가하거나 데모 데이터를 불러오세요."
+                ? "첫 계정을 추가하세요."
                 : "다른 검색어나 필터를 시도해 보세요."
             }
             action={
