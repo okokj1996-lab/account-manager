@@ -15,8 +15,13 @@ import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { VaultSelect } from "@/components/ui/vault-select"
 import { DEFAULT_GAME_ID, type VaultGame } from "@/lib/games"
+import { isMemberId, memberName, VAULT_MEMBERS, type MemberId, type MemberNames } from "@/lib/members"
 import {
   ACCOUNT_STATUS_LABELS,
+  LOGIN_PROVIDERS,
+  loginProviderLabel,
+  normalizeLoginProvider,
+  optionalAccountText,
   type AccountStatus,
   type ZeusAccount,
 } from "@/lib/types"
@@ -27,8 +32,12 @@ type FormState = {
   username: string
   password: string
   characterName: string
+  characterClass: string
   server: string
   level: string
+  loginProvider: string
+  accountOwner: string
+  managedByMemberId: string
   status: AccountStatus
   notes: string
   lastPlayedAt: string
@@ -39,8 +48,12 @@ const emptyForm: FormState = {
   username: "",
   password: "",
   characterName: "",
+  characterClass: "",
   server: "",
   level: "1",
+  loginProvider: "",
+  accountOwner: "",
+  managedByMemberId: "",
   status: "active",
   notes: "",
   lastPlayedAt: new Date().toISOString().slice(0, 10),
@@ -51,6 +64,8 @@ type AccountFormDialogProps = {
   onOpenChange: (open: boolean) => void
   account: ZeusAccount | null
   games: VaultGame[]
+  memberId: MemberId
+  names: MemberNames
   onSave: (account: ZeusAccount) => void
 }
 
@@ -59,12 +74,16 @@ export function AccountFormDialog({
   onOpenChange,
   account,
   games,
+  memberId,
+  names,
   onSave,
 }: AccountFormDialogProps) {
   const [form, setForm] = useState<FormState>(emptyForm)
   const [error, setError] = useState("")
   const gamesRef = useRef(games)
+  const memberIdRef = useRef(memberId)
   gamesRef.current = games
+  memberIdRef.current = memberId
 
   useEffect(() => {
     if (!open) return
@@ -78,14 +97,24 @@ export function AccountFormDialog({
         username: account.username,
         password: account.password,
         characterName: account.characterName,
+        characterClass: account.characterClass ?? "",
         server: account.server,
         level: String(account.level),
+        loginProvider: normalizeLoginProvider(account.loginProvider) ?? "",
+        accountOwner: account.accountOwner ?? "",
+        managedByMemberId: isMemberId(account.managedByMemberId)
+          ? account.managedByMemberId
+          : account.managedByMemberId?.trim() || "",
         status: account.status,
         notes: account.notes,
         lastPlayedAt: account.lastPlayedAt.slice(0, 10),
       })
     } else {
-      setForm({ ...emptyForm, game: fallback })
+      setForm({
+        ...emptyForm,
+        game: fallback,
+        managedByMemberId: memberIdRef.current,
+      })
     }
     setError("")
   }, [open, account])
@@ -111,7 +140,12 @@ export function AccountFormDialog({
     }
 
     const now = new Date().toISOString()
-    onSave({
+    const loginProvider = normalizeLoginProvider(form.loginProvider)
+    const characterClass = optionalAccountText(form.characterClass)
+    const accountOwner = optionalAccountText(form.accountOwner)
+    const managedRaw = form.managedByMemberId.trim()
+    const managedByMemberId = managedRaw || (account ? "" : memberId)
+    const next: ZeusAccount = {
       id: account?.id ?? createId(),
       game: form.game || DEFAULT_GAME_ID,
       username,
@@ -124,7 +158,17 @@ export function AccountFormDialog({
       lastPlayedAt: form.lastPlayedAt || now.slice(0, 10),
       createdAt: account?.createdAt ?? now,
       updatedAt: now,
-    })
+    }
+    if (loginProvider) next.loginProvider = loginProvider
+    if (characterClass) next.characterClass = characterClass
+    if (accountOwner) next.accountOwner = accountOwner
+    if (managedByMemberId) next.managedByMemberId = managedByMemberId
+    if (account?.usageStatus) next.usageStatus = account.usageStatus
+    if (account?.currentUserId) next.currentUserId = account.currentUserId
+    if (account?.usageStartedAt) next.usageStartedAt = account.usageStartedAt
+    if (account?.lastUsedBy) next.lastUsedBy = account.lastUsedBy
+    if (account?.lastUsedAt) next.lastUsedAt = account.lastUsedAt
+    onSave(next)
     onOpenChange(false)
   }
 
@@ -156,6 +200,22 @@ export function AccountFormDialog({
                 ]}
               />
             </Field>
+            <Field label="관리 사용자" htmlFor="managedByMemberId">
+              <VaultSelect
+                id="managedByMemberId"
+                value={form.managedByMemberId}
+                onChange={(next) => update("managedByMemberId", next)}
+                options={[
+                  ...(isMemberId(form.managedByMemberId)
+                    ? []
+                    : [{ value: form.managedByMemberId, label: "미지정" }]),
+                  ...VAULT_MEMBERS.map((member) => ({
+                    value: member.id,
+                    label: memberName(member.id, names),
+                  })),
+                ]}
+              />
+            </Field>
             <Field label="아이디" htmlFor="username">
               <Input
                 id="username"
@@ -175,15 +235,26 @@ export function AccountFormDialog({
                 autoComplete="off"
               />
             </Field>
-            <Field label="캐릭터명" htmlFor="characterName">
-              <Input
-                id="characterName"
-                value={form.characterName}
-                onChange={(e) => update("characterName", e.target.value)}
-                placeholder="제우스"
-              />
-            </Field>
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <Field label="캐릭터명" htmlFor="characterName">
+                <Input
+                  id="characterName"
+                  value={form.characterName}
+                  onChange={(e) => update("characterName", e.target.value)}
+                  placeholder="제우스"
+                />
+              </Field>
+              <Field label="캐릭터 직업" htmlFor="characterClass">
+                <Input
+                  id="characterClass"
+                  value={form.characterClass}
+                  onChange={(e) => update("characterClass", e.target.value)}
+                  placeholder="예: 궁수, 석궁, 전사"
+                  autoComplete="off"
+                />
+              </Field>
+            </div>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <Field label="서버" htmlFor="server">
                 <Input
                   id="server"
@@ -204,7 +275,42 @@ export function AccountFormDialog({
                 />
               </Field>
             </div>
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <Field label="로그인 방식" htmlFor="loginProvider">
+                <VaultSelect
+                  id="loginProvider"
+                  value={form.loginProvider}
+                  onChange={(next) => update("loginProvider", next)}
+                  options={[
+                    { value: "", label: "선택 안 함" },
+                    ...LOGIN_PROVIDERS.map((item) => ({
+                      value: item.id,
+                      label: item.label,
+                    })),
+                    ...(form.loginProvider &&
+                    form.loginProvider !== "" &&
+                    LOGIN_PROVIDERS.every((item) => item.id !== form.loginProvider)
+                      ? [
+                          {
+                            value: form.loginProvider,
+                            label: loginProviderLabel(form.loginProvider),
+                          },
+                        ]
+                      : []),
+                  ]}
+                />
+              </Field>
+              <Field label="계정 명의자" htmlFor="accountOwner">
+                <Input
+                  id="accountOwner"
+                  value={form.accountOwner}
+                  onChange={(e) => update("accountOwner", e.target.value)}
+                  placeholder="예: 상균, 재원, 선호"
+                  autoComplete="off"
+                />
+              </Field>
+            </div>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <Field label="상태" htmlFor="status">
                 <VaultSelect
                   id="status"

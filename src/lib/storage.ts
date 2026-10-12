@@ -94,6 +94,10 @@ function sameAccount(a?: ZeusAccount, b?: ZeusAccount): boolean {
     a.level === b.level &&
     a.status === b.status &&
     a.notes === b.notes &&
+    a.loginProvider === b.loginProvider &&
+    a.characterClass === b.characterClass &&
+    a.accountOwner === b.accountOwner &&
+    a.managedByMemberId === b.managedByMemberId &&
     a.lastPlayedAt === b.lastPlayedAt &&
     a.createdAt === b.createdAt &&
     a.updatedAt === b.updatedAt

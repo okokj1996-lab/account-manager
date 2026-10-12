@@ -28,15 +28,16 @@ import { Input } from "@/components/ui/input"
 import { Separator } from "@/components/ui/separator"
 import { VaultSelect } from "@/components/ui/vault-select"
 import { gameBadge, gameName, type VaultGame } from "@/lib/games"
-import { isMemberId, memberName, type MemberId, type MemberNames } from "@/lib/members"
+import { isMemberId, memberName, VAULT_MEMBERS, type MemberId, type MemberNames } from "@/lib/members"
 import { isAccountInUse, preserveAccountUsage, sameUsageState } from "@/lib/usage"
 import { mergeRoomEdits, sameAccountList } from "@/lib/storage"
 import {
   ACCOUNT_STATUS_LABELS,
+  loginProviderLabel,
   type AccountStatus,
   type ZeusAccount,
 } from "@/lib/types"
-import { filterAccounts } from "@/lib/validate"
+import { accountMatchesQuery, filterAccounts, groupAccountsByManager } from "@/lib/validate"
 
 type StatusFilter = "all" | AccountStatus
 type SortKey = "updated" | "level" | "name"
@@ -74,20 +75,20 @@ function UsageLine({
   const lastUsed = formatTime(account.lastUsedAt)
   return (
     <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1.5">
-      <div className="min-w-0">
+      <div className="min-w-0 flex-1">
         <p className="text-[0.65rem] tracking-[0.14em] text-[var(--zeus-gold)]">실시간 사용</p>
         {inUse && account.currentUserId ? (
           <div className="mt-0.5">
-            <p className="text-sm text-[var(--zeus-ivory)]">
+            <p className="break-keep text-sm text-[var(--zeus-ivory)]">
               {memberName(account.currentUserId, names)} 사용 중
             </p>
-            {started ? <p className="text-xs text-[var(--zeus-mist)]">{started}부터</p> : null}
+            {started ? <p className="text-xs whitespace-nowrap text-[var(--zeus-mist)]">{started}부터</p> : null}
           </div>
         ) : (
           <div className="mt-0.5">
             <p className="text-sm text-[var(--zeus-ivory)]">사용 가능</p>
             {account.lastUsedBy && lastUsed ? (
-              <p className="text-[0.7rem] text-muted-foreground">
+              <p className="break-keep text-[0.7rem] text-muted-foreground">
                 최근 사용자 {memberName(account.lastUsedBy, names)} · 최근 사용 {lastUsed}
               </p>
             ) : null}
@@ -99,7 +100,7 @@ function UsageLine({
           type="button"
           onClick={onStop}
           disabled={pending}
-          className="inline-flex h-8 items-center rounded-lg border border-[rgba(212,162,76,0.45)] px-3 text-sm font-medium text-[var(--zeus-ivory)] hover:bg-primary hover:text-primary-foreground disabled:pointer-events-none disabled:opacity-50"
+          className="inline-flex h-8 shrink-0 items-center rounded-lg border border-[rgba(212,162,76,0.45)] px-3 text-sm font-medium text-[var(--zeus-ivory)] hover:bg-primary hover:text-primary-foreground disabled:pointer-events-none disabled:opacity-50"
         >
           사용 종료
         </button>
@@ -109,12 +110,167 @@ function UsageLine({
           type="button"
           onClick={onStart}
           disabled={pending}
-          className="inline-flex h-8 items-center rounded-lg bg-primary px-3 text-sm font-medium text-primary-foreground hover:bg-primary/80 disabled:pointer-events-none disabled:opacity-50"
+          className="inline-flex h-8 shrink-0 items-center rounded-lg bg-primary px-3 text-sm font-medium text-primary-foreground hover:bg-primary/80 disabled:pointer-events-none disabled:opacity-50"
         >
           사용 시작
         </button>
       ) : null}
     </div>
+  )
+}
+
+function AccountCard({
+  account,
+  index,
+  revealed,
+  games,
+  names,
+  memberId,
+  usagePending,
+  onToggleReveal,
+  onCopy,
+  onEdit,
+  onDelete,
+  onStart,
+  onStop,
+  formatTime,
+}: {
+  account: ZeusAccount
+  index: number
+  revealed: boolean
+  games: VaultGame[]
+  names: MemberNames
+  memberId: MemberId
+  usagePending: boolean
+  onToggleReveal: () => void
+  onCopy: (label: string, value: string) => void
+  onEdit: () => void
+  onDelete: () => void
+  onStart: () => void
+  onStop: () => void
+  formatTime: (value?: string) => string
+}) {
+  return (
+    <li
+      className="@container/card account-row group grid min-w-0 gap-2 rounded-xl px-2.5 py-2.5 transition-colors"
+      style={{ animationDelay: `${Math.min(index, 8) * 40}ms` }}
+    >
+      <div className="min-w-0">
+        <Badge
+          variant="outline"
+          className="max-w-full border-[var(--zeus-gold)]/40 font-mono text-[0.65rem] tracking-wide text-[var(--zeus-gold)]"
+        >
+          <span className="block max-w-full truncate">{gameName(account.game, games)}</span>
+        </Badge>
+        <p className="mt-1 flex min-w-0 max-w-full flex-wrap items-baseline gap-x-1.5 overflow-hidden">
+          {account.characterName ? (
+            <span className="max-w-full min-w-0 truncate text-base leading-snug font-semibold text-[var(--zeus-ivory)]">
+              {account.characterName}
+            </span>
+          ) : null}
+          {account.characterClass ? (
+            <span className="max-w-full shrink-0 truncate text-sm leading-snug font-normal whitespace-nowrap text-[var(--zeus-mist)]">
+              {account.characterName ? `· ${account.characterClass}` : account.characterClass}
+            </span>
+          ) : null}
+        </p>
+        <p className="mt-0.5 flex min-w-0 items-baseline gap-1 text-xs text-muted-foreground">
+          <span className="shrink-0 whitespace-nowrap">Lv.{account.level}</span>
+          {account.server ? <span className="min-w-0 truncate">· {account.server}</span> : null}
+        </p>
+      </div>
+      <div className="flex max-w-full flex-wrap items-center justify-end gap-1">
+        <Button
+          variant="outline"
+          size="sm"
+          className="gap-1"
+          onClick={() => onCopy("로그인 정보", `${account.username}\n${account.password}`)}
+        >
+          <Copy className="size-3.5" />
+          복사
+        </Button>
+        <Button variant="ghost" size="sm" onClick={onEdit}>
+          <Pencil className="size-3.5" />
+          <span className="sr-only sm:not-sr-only sm:ml-1">수정</span>
+        </Button>
+        <DropdownMenu>
+          <DropdownMenuTrigger render={<Button variant="ghost" size="icon-sm" />}>
+            <MoreHorizontal className="size-4" />
+            <span className="sr-only">더보기</span>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem onClick={() => onCopy("아이디", account.username)}>
+              아이디 복사
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => onCopy("비밀번호", account.password)}>
+              비밀번호 복사
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem variant="destructive" onClick={onDelete}>
+              <Trash2 className="size-4" />
+              삭제
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </div>
+      <div className="min-w-0 space-y-1.5">
+        <div className="flex max-w-full flex-wrap items-center gap-x-3 gap-y-0.5 text-sm text-[var(--zeus-mist)]">
+          <span className="max-w-full min-w-0 truncate font-mono text-[0.8rem]">{account.username}</span>
+          <span className="inline-flex max-w-full min-w-0 items-center gap-1 font-mono text-[0.8rem]">
+            <span className={revealed ? "min-w-0 truncate" : "whitespace-nowrap"}>
+              {revealed ? account.password : "••••••••"}
+            </span>
+            <button
+              type="button"
+              className="shrink-0 rounded p-0.5 text-muted-foreground hover:text-foreground"
+              onClick={onToggleReveal}
+              aria-label={revealed ? "비밀번호 숨기기" : "비밀번호 보기"}
+            >
+              {revealed ? <EyeOff className="size-3.5" /> : <Eye className="size-3.5" />}
+            </button>
+          </span>
+          <span className="whitespace-nowrap text-xs text-muted-foreground">최근 {account.lastPlayedAt}</span>
+        </div>
+        {account.loginProvider || account.accountOwner ? (
+          <div className="flex max-w-full flex-wrap gap-x-4 gap-y-1.5 border-l border-[rgba(212,162,76,0.35)] pl-2.5">
+            {account.loginProvider ? (
+              <div className="min-w-[5.5rem] max-w-full flex-1">
+                <p className="text-[0.65rem] leading-none tracking-wide text-muted-foreground">로그인 방식</p>
+                <p className="mt-1 text-sm leading-tight break-keep text-[var(--zeus-ivory)]">
+                  {loginProviderLabel(account.loginProvider)}
+                </p>
+              </div>
+            ) : null}
+            {account.accountOwner ? (
+              <div className="min-w-[5.5rem] max-w-full flex-1">
+                <p className="text-[0.65rem] leading-none tracking-wide text-muted-foreground">계정 명의자</p>
+                <p className="mt-1 text-sm leading-tight break-keep wrap-break-word text-[var(--zeus-ivory)]">
+                  {account.accountOwner}
+                </p>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+        {account.notes ? (
+          <p className="truncate text-xs text-muted-foreground">{account.notes}</p>
+        ) : null}
+        <div className="grid gap-2 rounded-lg bg-black/20 px-2.5 py-1.5 ring-1 ring-white/8 @min-[36rem]/card:grid-cols-[auto_minmax(0,1fr)] @min-[36rem]/card:items-center @min-[36rem]/card:gap-4">
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
+            <span className="text-[0.65rem] tracking-[0.12em] text-muted-foreground">계정 상태</span>
+            <Badge variant={STATUS_BADGE[account.status]}>{ACCOUNT_STATUS_LABELS[account.status]}</Badge>
+          </div>
+          <UsageLine
+            account={account}
+            memberId={memberId}
+            names={names}
+            pending={usagePending}
+            onStart={onStart}
+            onStop={onStop}
+            formatTime={formatTime}
+          />
+        </div>
+      </div>
+    </li>
   )
 }
 
@@ -502,15 +658,10 @@ export function AccountManager({
       if (statusFilter !== "all" && account.status !== statusFilter) return false
       if (gameFilter !== "all" && account.game !== gameFilter) return false
       if (!q) return true
-      return (
-        account.username.toLowerCase().includes(q) ||
-        account.characterName.toLowerCase().includes(q) ||
-        account.server.toLowerCase().includes(q) ||
-        account.notes.toLowerCase().includes(q) ||
-        account.game.toLowerCase().includes(q) ||
-        gameName(account.game, games).toLowerCase().includes(q) ||
-        gameBadge(account.game).toLowerCase().includes(q)
-      )
+      return accountMatchesQuery(account, q, [
+        gameName(account.game, games),
+        gameBadge(account.game),
+      ])
     })
 
     list = [...list].sort((a, b) => {
@@ -521,6 +672,8 @@ export function AccountManager({
     })
     return list
   }, [accounts, deferredQuery, gameFilter, games, statusFilter, sortKey])
+
+  const grouped = useMemo(() => groupAccountsByManager(filtered), [filtered])
 
   const stats = useMemo(() => {
     const total = accounts.length
@@ -669,7 +822,7 @@ export function AccountManager({
         }}
       />
 
-      <div className="mx-auto flex w-full max-w-6xl flex-col gap-6 px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
+      <div className="mx-auto flex w-full min-w-0 max-w-6xl flex-col gap-6 px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
       {screen === "dashboard" ? (
         <VaultDashboard
           accounts={accounts}
@@ -712,7 +865,7 @@ export function AccountManager({
         </div>
       </header>
 
-      <section className="zeus-panel rounded-2xl p-4 sm:p-5">
+      <section className="zeus-panel min-w-0 rounded-2xl p-4 sm:p-5">
         <div className="flex flex-col gap-3 lg:flex-row lg:items-center">
           <div className="relative flex-1">
             <Search className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
@@ -766,164 +919,111 @@ export function AccountManager({
 
         <Separator className="my-4" />
 
-        {filtered.length === 0 ? (
+        {accounts.length === 0 ? (
           <EmptyState
-            title={accounts.length === 0 ? "계정이 없습니다" : "검색 결과 없음"}
-            description={
-              accounts.length === 0
-                ? "첫 계정을 추가하세요."
-                : "다른 검색어나 필터를 시도해 보세요."
-            }
+            title="계정이 없습니다"
+            description="첫 계정을 추가하세요."
             action={
-              accounts.length === 0 ? (
-                <Button onClick={openCreate} className="gap-1.5">
-                  <Plus className="size-4" />
-                  계정 추가
-                </Button>
-              ) : undefined
+              <Button onClick={openCreate} className="gap-1.5">
+                <Plus className="size-4" />
+                계정 추가
+              </Button>
             }
           />
         ) : (
-          <ul
-            className={`grid gap-2 ${isPending ? "opacity-70" : ""}`}
+          <div
+            className={`grid min-w-0 grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3 ${isPending ? "opacity-70" : ""}`}
             aria-live="polite"
           >
-            {filtered.map((account, index) => {
-              const revealed = revealedIds.has(account.id)
+            {VAULT_MEMBERS.map((member) => {
+              const list = grouped.columns[member.id]
+              const current = member.id === memberId
               return (
-                <li
-                  key={account.id}
-                  className="account-row group grid gap-3 rounded-xl px-3 py-3 transition-colors sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start"
-                  style={{ animationDelay: `${Math.min(index, 8) * 40}ms` }}
+                <section
+                  key={member.id}
+                  className={`min-w-0 rounded-xl bg-black/15 px-3 py-3 ${
+                    current
+                      ? "ring-1 ring-[rgba(212,162,76,0.32)]"
+                      : "ring-1 ring-white/8"
+                  }`}
                 >
-                  <div className="min-w-0 space-y-1.5">
-                    <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                      <Badge
-                        variant="outline"
-                        className="border-[var(--zeus-gold)]/40 font-mono text-[0.65rem] tracking-wide text-[var(--zeus-gold)]"
-                      >
-                        {gameName(account.game, games)}
-                      </Badge>
-                      <p className="font-[family-name:var(--font-display)] text-lg tracking-wide text-[var(--zeus-ivory)]">
-                        {account.characterName}
-                      </p>
-                      <span className="text-xs text-muted-foreground">
-                        Lv.{account.level} · {account.server}
-                      </span>
+                  <header className="mb-3 flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <h2 className="truncate text-sm font-semibold text-[var(--zeus-ivory)]">
+                        {memberName(member.id, names)}
+                      </h2>
+                      {current ? (
+                        <p className="mt-0.5 text-[0.65rem] tracking-wide text-[var(--zeus-gold)]">
+                          현재 사용자
+                        </p>
+                      ) : null}
                     </div>
-                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-[var(--zeus-mist)]">
-                      <span className="font-mono text-[0.8rem]">
-                        {account.username}
-                      </span>
-                      <span className="inline-flex items-center gap-1 font-mono text-[0.8rem]">
-                        {revealed ? account.password : "••••••••"}
-                        <button
-                          type="button"
-                          className="rounded p-0.5 text-muted-foreground hover:text-foreground"
-                          onClick={() => toggleReveal(account.id)}
-                          aria-label={
-                            revealed ? "비밀번호 숨기기" : "비밀번호 보기"
-                          }
-                        >
-                          {revealed ? (
-                            <EyeOff className="size-3.5" />
-                          ) : (
-                            <Eye className="size-3.5" />
-                          )}
-                        </button>
-                      </span>
-                      <span className="text-xs text-muted-foreground">
-                        최근 {account.lastPlayedAt}
-                      </span>
-                    </div>
-                    {account.notes ? (
-                      <p className="truncate text-xs text-muted-foreground">
-                        {account.notes}
-                      </p>
-                    ) : null}
-                    <div className="grid gap-2 rounded-lg bg-black/20 px-3 py-2 ring-1 ring-white/8 sm:grid-cols-[auto_minmax(0,1fr)] sm:items-center sm:gap-4">
-                      <div className="flex items-center gap-2">
-                        <span className="text-[0.65rem] tracking-[0.12em] text-muted-foreground">
-                          계정 상태
-                        </span>
-                        <Badge variant={STATUS_BADGE[account.status]}>
-                          {ACCOUNT_STATUS_LABELS[account.status]}
-                        </Badge>
-                      </div>
-                      <UsageLine
-                        account={account}
-                        memberId={memberId}
-                        names={names}
-                        pending={usagePendingId !== null}
-                        onStart={() => void changeUsage(account.id, "start")}
-                        onStop={() => void changeUsage(account.id, "stop")}
-                        formatTime={formatUsageTime}
-                      />
-                    </div>
-                  </div>
-
-                  <div className="flex items-center gap-1.5 sm:justify-end">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="gap-1"
-                      onClick={() =>
-                        copyText(
-                          "로그인 정보",
-                          `${account.username}\n${account.password}`
-                        )
-                      }
-                    >
-                      <Copy className="size-3.5" />
-                      복사
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => openEdit(account)}
-                    >
-                      <Pencil className="size-3.5" />
-                      <span className="sr-only sm:not-sr-only sm:ml-1">
-                        수정
-                      </span>
-                    </Button>
-                    <DropdownMenu>
-                      <DropdownMenuTrigger
-                        render={
-                          <Button variant="ghost" size="icon-sm" />
-                        }
-                      >
-                        <MoreHorizontal className="size-4" />
-                        <span className="sr-only">더보기</span>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end">
-                        <DropdownMenuItem
-                          onClick={() => copyText("아이디", account.username)}
-                        >
-                          아이디 복사
-                        </DropdownMenuItem>
-                        <DropdownMenuItem
-                          onClick={() =>
-                            copyText("비밀번호", account.password)
-                          }
-                        >
-                          비밀번호 복사
-                        </DropdownMenuItem>
-                        <DropdownMenuSeparator />
-                        <DropdownMenuItem
-                          variant="destructive"
-                          onClick={() => handleDelete(account.id)}
-                        >
-                          <Trash2 className="size-4" />
-                          삭제
-                        </DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  </div>
-                </li>
+                    <span className="shrink-0 rounded-full border border-[rgba(212,162,76,0.35)] px-2 py-0.5 text-xs text-[var(--zeus-gold)]">
+                      {list.length}개
+                    </span>
+                  </header>
+                  {list.length === 0 ? (
+                    <p className="text-xs text-muted-foreground">계정이 없습니다.</p>
+                  ) : (
+                    <ul className="grid min-w-0 gap-2">
+                      {list.map((account, index) => (
+                        <AccountCard
+                          key={account.id}
+                          account={account}
+                          index={index}
+                          revealed={revealedIds.has(account.id)}
+                          games={games}
+                          names={names}
+                          memberId={memberId}
+                          usagePending={usagePendingId !== null}
+                          onToggleReveal={() => toggleReveal(account.id)}
+                          onCopy={copyText}
+                          onEdit={() => openEdit(account)}
+                          onDelete={() => handleDelete(account.id)}
+                          onStart={() => void changeUsage(account.id, "start")}
+                          onStop={() => void changeUsage(account.id, "stop")}
+                          formatTime={formatUsageTime}
+                        />
+                      ))}
+                    </ul>
+                  )}
+                </section>
               )
             })}
-          </ul>
+            {grouped.unassigned.length > 0 ? (
+              <section className="min-w-0 rounded-xl bg-black/15 px-3 py-3 ring-1 ring-white/8 md:col-span-2 xl:col-span-3">
+                <header className="mb-3 flex items-start justify-between gap-2">
+                  <h2 className="min-w-0 text-sm font-semibold text-[var(--zeus-ivory)]">
+                    관리 사용자 미지정
+                  </h2>
+                  <span className="shrink-0 rounded-full border border-white/15 px-2 py-0.5 text-xs text-muted-foreground">
+                    {grouped.unassigned.length}개
+                  </span>
+                </header>
+                <ul className="grid min-w-0 gap-2">
+                  {grouped.unassigned.map((account, index) => (
+                    <AccountCard
+                      key={account.id}
+                      account={account}
+                      index={index}
+                      revealed={revealedIds.has(account.id)}
+                      games={games}
+                      names={names}
+                      memberId={memberId}
+                      usagePending={usagePendingId !== null}
+                      onCopy={copyText}
+                      onEdit={() => openEdit(account)}
+                      onDelete={() => handleDelete(account.id)}
+                      onToggleReveal={() => toggleReveal(account.id)}
+                      onStart={() => void changeUsage(account.id, "start")}
+                      onStop={() => void changeUsage(account.id, "stop")}
+                      formatTime={formatUsageTime}
+                    />
+                  ))}
+                </ul>
+              </section>
+            ) : null}
+          </div>
         )}
       </section>
       </>
@@ -935,6 +1035,8 @@ export function AccountManager({
         onOpenChange={setDialogOpen}
         account={editing}
         games={games}
+        memberId={memberId}
+        names={names}
         onSave={handleSave}
       />
 
