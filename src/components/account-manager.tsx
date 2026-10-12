@@ -841,7 +841,9 @@ export function AccountManager({
         />
       ) : (
       <>
-      <header className="zeus-panel rounded-2xl px-5 py-5 sm:px-6">
+      <header
+        className={`zeus-panel rounded-2xl px-5 py-5 sm:px-6${gameFilter === "all" ? " accounts-summary" : ""}`}
+      >
         <div className="flex flex-wrap items-center justify-between gap-3">
           <h1 className="font-[family-name:var(--font-display)] text-2xl tracking-wide text-[var(--zeus-ivory)]">
             {listTitle}
@@ -856,7 +858,9 @@ export function AccountManager({
           </button>
         </div>
         <div className="mt-5 sm:max-w-md">
-          <p className="mb-2 text-[0.65rem] tracking-[0.14em] text-[var(--zeus-mist)]">계정 상태</p>
+          <p className="account-status-label mb-2 text-[0.65rem] tracking-[0.14em] text-[var(--zeus-mist)]">
+            계정 상태
+          </p>
           <div className="grid grid-cols-3 gap-3">
             <Stat label="전체" value={stats.total} />
             <Stat label="활성" value={stats.active} />
@@ -865,7 +869,9 @@ export function AccountManager({
         </div>
       </header>
 
-      <section className="zeus-panel min-w-0 rounded-2xl p-4 sm:p-5">
+      <section
+        className={`zeus-panel min-w-0 rounded-2xl p-4 sm:p-5${gameFilter === "all" ? " accounts-board" : ""}`}
+      >
         <div className="flex flex-col gap-3 lg:flex-row lg:items-center">
           <div className="relative flex-1">
             <Search className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
@@ -941,7 +947,7 @@ export function AccountManager({
               return (
                 <section
                   key={member.id}
-                  className={`min-w-0 rounded-xl bg-black/15 px-3 py-3 ${
+                  className={`member-column min-w-0 rounded-xl bg-black/15 px-3 py-3 ${
                     current
                       ? "ring-1 ring-[rgba(212,162,76,0.32)]"
                       : "ring-1 ring-white/8"
@@ -991,7 +997,7 @@ export function AccountManager({
               )
             })}
             {grouped.unassigned.length > 0 ? (
-              <section className="min-w-0 rounded-xl bg-black/15 px-3 py-3 ring-1 ring-white/8 md:col-span-2 xl:col-span-3">
+              <section className="unassigned-column min-w-0 rounded-xl bg-black/15 px-3 py-3 ring-1 ring-white/8 md:col-span-2 xl:col-span-3">
                 <header className="mb-3 flex items-start justify-between gap-2">
                   <h2 className="min-w-0 text-sm font-semibold text-[var(--zeus-ivory)]">
                     관리 사용자 미지정
@@ -1054,7 +1060,7 @@ export function AccountManager({
 
 function Stat({ label, value }: { label: string; value: number }) {
   return (
-    <div className="rounded-xl bg-black/20 px-3 py-2.5 ring-1 ring-white/8">
+    <div className="account-stat rounded-xl bg-black/20 px-3 py-2.5 ring-1 ring-white/8">
       <p className="text-[0.65rem] tracking-[0.18em] text-[var(--zeus-mist)] uppercase">
         {label}
       </p>

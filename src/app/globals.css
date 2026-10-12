@@ -104,14 +104,15 @@
   }
 }
 
+html {
+  background-color: #050b14;
+}
+
 body {
   min-height: 100vh;
-  background:
-    radial-gradient(ellipse 80% 50% at 50% -10%, rgba(126, 200, 255, 0.14), transparent 55%),
-    radial-gradient(ellipse 55% 40% at 85% 15%, rgba(212, 162, 76, 0.12), transparent 50%),
-    radial-gradient(ellipse 45% 35% at 10% 70%, rgba(30, 70, 120, 0.35), transparent 55%),
-    linear-gradient(165deg, #050b14 0%, #0a1626 45%, #07111f 100%);
-  background-attachment: fixed;
+  min-height: 100dvh;
+  background-color: #050b14;
+  isolation: isolate;
 }
 
 body::before {
@@ -119,12 +120,14 @@ body::before {
   pointer-events: none;
   position: fixed;
   inset: 0;
-  opacity: 0.35;
+  z-index: -1;
+  background-color: #050b14;
   background-image:
-    linear-gradient(rgba(243, 234, 215, 0.03) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(243, 234, 215, 0.03) 1px, transparent 1px);
-  background-size: 48px 48px;
-  mask-image: radial-gradient(ellipse at center, black 30%, transparent 80%);
+    linear-gradient(180deg, rgba(5, 11, 20, 0.66) 0%, rgba(5, 11, 20, 0.50) 46%, rgba(3, 8, 16, 0.70) 100%),
+    url("/images/olympus-bg.png");
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
 }
 
 .zeus-panel {
@@ -157,6 +160,62 @@ body::before {
 .zeus-panel > * {
   position: relative;
   z-index: 1;
+}
+
+/* Login card only. No blur, so the Olympus scene stays sharp. */
+.zeus-panel.login-glass {
+  background: linear-gradient(145deg, rgba(16, 28, 46, 0.42), rgba(8, 16, 28, 0.42));
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  box-shadow:
+    0 0 0 1px rgba(212, 162, 76, 0.16),
+    0 8px 24px rgba(0, 0, 0, 0.22);
+}
+
+.zeus-panel.login-glass :is(h1, p, label) {
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.55);
+}
+
+.zeus-panel.login-glass input,
+.zeus-panel.login-glass input:disabled {
+  background-color: rgba(3, 8, 16, 0.88);
+  border-color: rgba(180, 196, 214, 0.28);
+}
+
+/* All-accounts summary only. */
+.zeus-panel.accounts-summary {
+  background: linear-gradient(145deg, rgba(21, 36, 56, 0.6), rgba(12, 26, 46, 0.55));
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+.zeus-panel.accounts-summary > div > h1,
+.zeus-panel.accounts-summary .account-status-label {
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
+}
+
+.zeus-panel.accounts-summary .account-stat {
+  background-color: rgba(7, 17, 31, 0.86);
+}
+
+/* All-accounts list shell only. Cards keep their own fill. */
+.zeus-panel.accounts-board {
+  background: linear-gradient(145deg, rgba(21, 36, 56, 0.6), rgba(12, 26, 46, 0.55));
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+.zeus-panel.accounts-board .member-column {
+  background-color: rgba(5, 11, 20, 0.85);
+}
+
+.zeus-panel.accounts-board .unassigned-column {
+  background-color: rgba(5, 11, 20, 0.8);
+}
+
+.zeus-panel.accounts-board input {
+  background-color: rgba(3, 8, 16, 0.9);
+  border-color: rgba(180, 196, 214, 0.28);
 }
 
 .account-row {
