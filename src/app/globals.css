@@ -303,6 +303,22 @@ body::before {
   animation: toast-in 0.25s ease both;
 }
 
+@media (max-width: 639px) {
+  .account-form-dialog {
+    max-height: calc(100vh - 1rem);
+    max-height: calc(
+      100svh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 1rem
+    );
+    overflow-x: hidden;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+    touch-action: pan-y;
+    padding-bottom: calc(1.75rem + env(safe-area-inset-bottom, 0px));
+    scroll-padding-bottom: calc(1rem + env(safe-area-inset-bottom, 0px));
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .zeus-panel::after,
   .animate-rise,

@@ -174,7 +174,7 @@ export function AccountFormDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-md" showCloseButton>
+      <DialogContent className="account-form-dialog sm:max-w-md" showCloseButton>
         <form onSubmit={handleSubmit} className="grid gap-4">
           <DialogHeader>
             <DialogTitle className="font-[family-name:var(--font-display)] tracking-wide">
